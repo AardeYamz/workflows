@@ -1,0 +1,18 @@
+name: Lint D2 diagrams
+description: Compiles every tracked *.d2 file and every d2 code block in the repo's tracked Markdown, and fails on an error. Run actions/checkout first.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: lts/*
+
+    - name: Install the linter
+      shell: bash
+      run: npm ci --prefix "$GITHUB_ACTION_PATH"
+
+    # The linter lists the caller's files with `git ls-files`, so it runs in the caller's workspace.
+    - name: Lint
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/lint.mjs"

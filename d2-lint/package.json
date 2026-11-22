@@ -1,0 +1,12 @@
+{
+  "name": "d2-lint",
+  "private": true,
+  "type": "module",
+  "description": "Compiles every .d2 file and d2 block in the repo's Markdown. Run: npm ci && node lint.mjs",
+  "scripts": {
+    "lint": "node lint.mjs"
+  },
+  "dependencies": {
+    "@terrastruct/d2": "^0.1.33"
+  }
+}

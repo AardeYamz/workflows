@@ -1,0 +1,150 @@
+name: Merge the default branch into PRs
+
+# After a push to the base branch, merges it into each open PR branch that is behind. A PR whose merge conflicts is left
+# untouched: the run shows a warning and the PR gets a comment (once per base commit). Fork PRs are skipped (the token
+# cannot push to them), and so are Dependabot PRs (it rebases them itself and stops once someone else has pushed).
+# A merge that would bring in a change to .github/workflows/** is not pushed: GITHUB_TOKEN may not push workflow changes.
+# One PR that cannot be updated (a failed fetch, a rejected push) is a warning, and the loop goes on to the next PR.
+#
+# Caller:
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   concurrency:
+#     group: sync-prs
+#     cancel-in-progress: false
+#   jobs:
+#     sync:
+#       permissions:
+#         contents: write       # pushes the merge commit
+#         pull-requests: write  # comments on a PR that conflicts
+#         actions: write        # dispatches dispatch-workflows (required even if that is empty: a called job may
+#                               # not ask for more than its caller grants)
+#       uses: AardeYamz/workflows/.github/workflows/sync-prs.yml@<sha> # <tag>
+#       with:
+#         ci-owned-paths: src/version.txt dist        # or a glob: '20*/*/version.txt'
+#         dispatch-workflows: build-test.yml security.yml   # run on each updated PR branch
+#         dispatch-on-base: deploy.yml                # run once on the base branch if any PR was updated
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: Branch to merge into the PRs.
+        type: string
+        default: main
+      ci-owned-paths:
+        description: >-
+          Space-separated paths or git pathspec globs that only CI writes (version stamps, dist/). In a merge, the base
+          branch's copy always wins, so they never count as a conflict.
+        type: string
+        default: ''
+      dispatch-workflows:
+        description: >-
+          Space-separated workflow files to run with workflow_dispatch on each branch this updates. A push made with
+          GITHUB_TOKEN does not trigger pull_request workflows, so without this the new head has no checks. The caller
+          must grant actions: write.
+        type: string
+        default: ''
+      dispatch-on-base:
+        description: >-
+          Space-separated workflow files to run once on the base branch when at least one PR was updated (e.g. a deploy
+          that republishes every PR's preview). The caller must grant actions: write.
+        type: string
+        default: ''
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+    outputs:
+      updated:
+        description: How many PR branches were updated.
+        value: ${{ jobs.sync.outputs.updated }}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BASE: ${{ inputs.base }}
+      CI_OWNED: ${{ inputs.ci-owned-paths }}
+      DISPATCH: ${{ inputs.dispatch-workflows }}
+      DISPATCH_ON_BASE: ${{ inputs.dispatch-on-base }}
+    outputs:
+      updated: ${{ steps.merge.outputs.updated }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base }}
+          fetch-depth: 0
+          persist-credentials: false   # the token is passed through the environment below, never written to .git/config
+
+      - name: Merge the base branch into each open PR
+        id: merge
+        run: |
+          set -f   # ci-owned-paths may hold globs for git, which the shell must not expand
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base_sha=$(git rev-parse --short "origin/$BASE")
+          updated=0
+          while read -r n branch; do
+            if ! git fetch --quiet origin "$branch" || ! git checkout --quiet --detach FETCH_HEAD; then
+              echo "::warning title=Fetch failed::PR #$n ($branch) could not be fetched; not updated."
+              continue
+            fi
+            if git merge-base --is-ancestor "origin/$BASE" HEAD; then
+              echo "#$n ($branch) is already up to date"
+              continue
+            fi
+            tip=$(git rev-parse HEAD)
+            git merge --no-commit --no-ff "origin/$BASE" >/dev/null 2>&1 || true
+            for p in $CI_OWNED; do
+              git checkout "origin/$BASE" -- "$p" 2>/dev/null || true
+            done
+            if [ -n "$(git diff --name-only --diff-filter=U)" ] || ! git commit --no-edit -q -m "Merge $BASE into $branch"; then
+              git merge --abort 2>/dev/null || git reset -q --hard "$tip"
+              echo "::warning title=Merge conflict::PR #$n ($branch) conflicts with $BASE; not updated. Resolve it by hand."
+              marker="<!-- sync-prs:$base_sha -->"
+              if ! gh pr view "$n" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
+                gh pr comment "$n" --body "$marker
+          **Could not merge \`$BASE\` into this branch:** it conflicts with \`$BASE\` (\`$base_sha\`). Merge \`$BASE\` in locally and resolve the conflicts." </dev/null \
+                  || echo "::warning::could not comment on PR #$n"
+              fi
+              continue
+            fi
+            if [ -n "$(git diff --name-only "$tip" HEAD -- .github/workflows)" ]; then
+              git reset -q --hard "$tip"
+              echo "::warning title=Workflow change::PR #$n ($branch) would take a change to .github/workflows from $BASE, which this token cannot push; not updated. Merge $BASE in by hand."
+              continue
+            fi
+            if git push --quiet origin "HEAD:refs/heads/$branch"; then
+              echo "#$n ($branch) updated"
+              updated=$((updated + 1))
+              for wf in $DISPATCH; do
+                gh workflow run "$wf" --ref "$branch" || echo "::warning::could not dispatch $wf on $branch"
+              done
+            else
+              git reset -q --hard "$tip"
+              echo "::warning title=Push rejected::PR #$n ($branch): the push was rejected (the branch may have moved); not updated."
+            fi
+          done < <(gh pr list --state open --base "$BASE" --limit 1000 --json number,headRefName,isCrossRepository,author \
+            --jq '.[] | select((.isCrossRepository | not) and .author.login != "app/dependabot") | "\(.number) \(.headRefName)"')
+          echo "$updated PR(s) updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "updated=$updated" >> "$GITHUB_OUTPUT"
+          if [ "$updated" -gt 0 ]; then
+            for wf in $DISPATCH_ON_BASE; do
+              gh workflow run "$wf" --ref "$BASE" || echo "::warning::could not dispatch $wf on $BASE"
+            done
+          fi

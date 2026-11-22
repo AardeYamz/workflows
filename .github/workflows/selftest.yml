@@ -1,0 +1,50 @@
+name: Self-test
+
+# Tests this repo before any caller pins a new commit:
+#   - linters: runs mermaid-lint and d2-lint from source on this repo's fixtures, and checks that each fails on a
+#     broken diagram
+#   - diagrams, zizmor: calls the read-only templates at this commit, the way a caller would
+# sync-prs and dependabot-auto-merge push and merge, so they are only exercised by their callers.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linters:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./mermaid-lint
+      - uses: ./d2-lint
+      - name: Each linter fails on a broken diagram
+        shell: bash
+        run: |
+          printf '```mermaid\ngraph TD; A-->\n```\n' > broken-mermaid.md
+          printf 'x: {\n  a ->\n}\n' > broken.d2
+          printf '```d2\nq: {\n```\n' > broken-d2.md
+          fail=0
+          for t in "mermaid-lint/lint.mjs broken-mermaid.md" "d2-lint/lint.mjs broken.d2" "d2-lint/lint.mjs broken-d2.md"; do
+            set -- $t
+            if node "$1" "$2"; then echo "::error::$1 passed $2, which is broken"; fail=1; else echo "ok: $1 rejected $2"; fi
+          done
+          exit $fail
+
+  diagrams:
+    uses: ./.github/workflows/diagram-lint.yml
+    with:
+      d2: true
+
+  zizmor:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/zizmor.yml

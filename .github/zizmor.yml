@@ -1,0 +1,6 @@
+# zizmor settings for this repo (found automatically by zizmor and zizmor-action).
+rules:
+  # Suggests the newer self-repository syntax for `uses: ./...` local actions and workflows. This repo calls its own
+  # actions with ./ on purpose, to test them from source on every PR.
+  self-repository:
+    disable: true

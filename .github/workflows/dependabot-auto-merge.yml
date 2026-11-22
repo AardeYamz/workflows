@@ -1,0 +1,89 @@
+name: Dependabot auto-merge
+
+# Merges the Dependabot PRs that are safe by default, once the PR's own checks have passed:
+#   - any patch or minor version bump
+#   - a major bump of a dev-only dependency
+# A major bump of a production dependency is left for review. With no branch protection, `gh pr merge --auto` would merge
+# on sight, even into a failing build, so this polls the PR's checks instead (`gh pr checks --watch` would wait on this
+# job itself) and requires the `required-workflow` checks to have been reported, so an early all-green snapshot taken
+# before CI starts is not mistaken for success.
+#
+# The caller must use pull_request_target: GitHub gives pull_request runs from Dependabot a read-only token. That is safe
+# here because nothing from the PR head is checked out or run; the job only reads PR metadata and calls `gh pr merge`.
+# Caller:
+#   on: # zizmor: ignore[dangerous-triggers]
+#     pull_request_target:
+#       branches: [main]
+#   jobs:
+#     auto-merge:
+#       if: github.event.pull_request.user.login == 'dependabot[bot]'
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       uses: AardeYamz/workflows/.github/workflows/dependabot-auto-merge.yml@<sha> # <tag>
+#       with:
+#         required-workflow: Build & Test
+on:
+  workflow_call:
+    inputs:
+      required-workflow:
+        description: Name of the workflow whose checks must be reported (and pass) before merging.
+        type: string
+        required: true
+      merge-method:
+        description: squash, merge or rebase.
+        type: string
+        default: squash
+      timeout-minutes:
+        description: How long to wait for the checks, in minutes (at most 60).
+        type: number
+        default: 30
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 65   # a ceiling; the wait itself is bounded by the timeout-minutes input (max 60)
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Wait for CI, then merge safe updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major' || steps.metadata.outputs.dependency-type == 'direct:development'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REQUIRED: ${{ inputs.required-workflow }}
+          METHOD: ${{ inputs.merge-method }}
+          WAIT_MINUTES: ${{ inputs.timeout-minutes }}
+        run: |
+          case "$METHOD" in squash|merge|rebase) ;; *) echo "::error::merge-method must be squash, merge or rebase"; exit 1 ;; esac
+          tries=$(( (WAIT_MINUTES > 60 ? 60 : WAIT_MINUTES) * 4 ))
+          for _ in $(seq 1 "$tries"); do
+            checks=$(gh pr checks "$PR_URL" --json name,bucket,workflow 2>/dev/null || echo '[]')
+            others=$(jq -c --arg self "$GITHUB_WORKFLOW" '[.[] | select(.workflow != $self)]' <<<"$checks")
+            if jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' <<<"$others" >/dev/null; then
+              echo "::error::A check failed; leaving the PR open for review."
+              jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | "  \(.workflow) / \(.name)"' <<<"$others"
+              exit 1
+            fi
+            if jq -e --arg req "$REQUIRED" 'any(.[]; .workflow == $req) and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$others" >/dev/null; then
+              gh pr merge "--$METHOD" "$PR_URL"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Checks did not finish in time."
+          exit 1

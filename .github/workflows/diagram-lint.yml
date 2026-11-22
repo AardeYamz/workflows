@@ -1,0 +1,49 @@
+name: Diagram lint
+
+# Lints a repo's diagrams with the shared linters in this repo: mermaid blocks in Markdown, and .d2 files plus d2 blocks.
+# Caller (after copying, pin the SHA of the release you want):
+#   jobs:
+#     diagrams:
+#       uses: AardeYamz/workflows/.github/workflows/diagram-lint.yml@<sha> # <tag>
+#       with:
+#         d2: true
+# The linters are pinned below by SHA; bump them here, once, when mermaid-lint/ or d2-lint/ change.
+on:
+  workflow_call:
+    inputs:
+      mermaid:
+        description: Lint ```mermaid blocks in tracked Markdown.
+        type: boolean
+        default: true
+      d2:
+        description: Lint tracked .d2 files and ```d2 blocks in tracked Markdown.
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  mermaid:
+    if: inputs.mermaid
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: AardeYamz/personal-domain-devops/mermaid-lint@d938ad896d2475ea6494b52421c3b95a943df72e # main 2026-11-22
+
+  d2:
+    if: inputs.d2
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: AardeYamz/personal-domain-devops/d2-lint@d938ad896d2475ea6494b52421c3b95a943df72e # main 2026-11-22
