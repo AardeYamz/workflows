@@ -1,19 +1,44 @@
 # workflows
 
-Shared GitHub Actions for AardeYamz repos: reusable workflows and the diagram linters they run. Each repo keeps a short caller workflow with its own triggers, concurrency and permissions, and `uses:` a template from here pinned by SHA, so CI logic and action bumps live in one place.
+Shared GitHub Actions for the AardeYamz repos: reusable workflows and the diagram linters they run. Each repo keeps a short caller workflow with its own triggers and `uses:` a template from here pinned by SHA, so CI logic and action bumps live in one place.
 
-This repo is public so that public repos can call it (GitHub doesn't let a public repo use a private repo's workflows or actions). Keep it free of secrets, hostnames and anything else repo-specific: those belong in the callers.
+Public on purpose: GitHub doesn't let a public repo call a private repo's workflows. Keep it free of secrets and repo-specific values.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph callers["Caller repos (a short workflow each)"]
+        c1["v3.yannislam.org"]
+        c2["trips, personal-timeline, lam-yan-lik, ..."]
+    end
+    subgraph here["workflows"]
+        dl["diagram-lint.yml"]
+        zz["zizmor.yml"]
+        sp["sync-prs.yml"]
+        da["dependabot-auto-merge.yml"]
+        ml["mermaid-lint/"]
+        d2["d2-lint/"]
+    end
+    c1 & c2 -->|"uses: @sha"| dl & zz & sp & da
+    dl --> ml & d2
+```
+
+| Where | What |
+|---|---|
+| `.github/workflows/` | the four reusable workflows, and `selftest.yml` (runs the linters from source on every PR) |
+| `mermaid-lint/`, `d2-lint/` | composite actions: parse every tracked mermaid block, compile every `*.d2` file and d2 block |
 
 ## Reusable workflows
 
 | Workflow | Inputs | What it does |
 |---|---|---|
-| [`diagram-lint.yml`](.github/workflows/diagram-lint.yml) | `mermaid` (default `true`), `d2` (default `false`) | Runs [`mermaid-lint`](mermaid-lint/) and/or [`d2-lint`](d2-lint/) on the caller's repo |
-| [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (default `true`) | Lints the caller's workflow files with [zizmor](https://docs.zizmor.sh) and uploads SARIF to code scanning. Private repos without code scanning pass `false` to get annotations and a failing job instead |
-| [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base`, `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | Merges the base branch into each open, behind, same-repo PR. Comments on conflicts, skips Dependabot PRs and merges that would change `.github/workflows/**`, and can re-run workflows on each updated branch or once on the base branch |
-| [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow`, `merge-method`, `timeout-minutes` | Waits for a Dependabot PR's checks, then merges patch/minor bumps and dev-only majors |
+| [`diagram-lint.yml`](.github/workflows/diagram-lint.yml) | `mermaid` (default `true`), `d2` (default `false`) | Runs the diagram linters on the caller's repo |
+| [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (default `true`) | Lints the caller's workflow files with [zizmor](https://docs.zizmor.sh) and uploads SARIF |
+| [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base`, `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | Merges the base branch into each open, behind, same-repo PR; comments on conflicts |
+| [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow`, `merge-method`, `timeout-minutes` | Merges patch/minor Dependabot PRs once checks pass |
 
-Every workflow also takes `runs-on`. Left empty, it uses the caller's `vars.RUNNER`, else `ubuntu-26.04`. Each file's header comment includes a sample caller and the permissions the caller must grant. A called job can't ask for more permissions than its caller grants, so grant everything listed.
+Every workflow also takes `runs-on` (default: the caller's `vars.RUNNER`, else `ubuntu-26.04`). Each file's header has a sample caller and the permissions the caller must grant.
 
 ```yaml
 jobs:
@@ -23,30 +48,20 @@ jobs:
       d2: true
 ```
 
-## Diagram linters
+Run a linter locally from the repo you want to check: `npm ci --prefix <path to workflows>/mermaid-lint && node <path to workflows>/mermaid-lint/lint.mjs`.
 
-Both are composite actions as well: `uses: AardeYamz/workflows/mermaid-lint@<sha>` (or `d2-lint`), after `actions/checkout`.
+## Related repos
 
-- **`mermaid-lint/`** parses every ```mermaid block in the repo's tracked `*.md` files with `mermaid.parse` (jsdom supplies the DOM).
-- **`d2-lint/`** compiles every tracked `*.d2` file and every ```d2 block with [D2.js](https://www.npmjs.com/package/@terrastruct/d2), the official WASM build of d2, so no binary is needed. Compiling includes the layout, so it also catches unknown keywords and bad references. `@import`s between tracked `.d2` files resolve.
-
-Each prints `file:line: message` for every broken diagram, writes `::error` annotations under Actions, and exits 1 if any fail. To run them locally from the repo whose diagrams you edited, with this repo cloned next to it:
-
-```
-npm ci --prefix ../workflows/mermaid-lint && node ../workflows/mermaid-lint/lint.mjs
-npm ci --prefix ../workflows/d2-lint && node ../workflows/d2-lint/lint.mjs
-```
-
-The linters check the source, not any rendered SVG.
+| Repo | Relationship |
+|---|---|
+| [personal-domain-devops](https://github.com/AardeYamz/personal-domain-devops) | Private CI infrastructure (deploy action, runners); calls these workflows |
+| [v3.yannislam.org](https://github.com/AardeYamz/v3.yannislam.org) | Public caller, the reason this repo is public |
+| [personal-server](https://github.com/AardeYamz/personal-server) | Hosts the self-hosted runners that run these jobs |
 
 ## Releasing
 
-1. Change things on a branch and open a PR. [`selftest.yml`](.github/workflows/selftest.yml) runs the linters from source, checks they reject broken diagrams, and calls the read-only templates at the PR's commit.
-2. When a linter changes, bump the SHA that `diagram-lint.yml` pins to the linter's new commit, in a follow-up PR.
-3. After merging, tag the merge commit `vX.Y.Z`, create a release, and move the `v1` tag. Callers then bump to the new tag's SHA, with `# vX.Y.Z` as the comment.
-
-Dependabot bumps the actions pinned here and the linters' npm dependencies weekly.
-
-## Licence
+1. Branch and PR; `selftest.yml` checks the linters reject broken diagrams.
+2. If a linter changed, bump the SHA `diagram-lint.yml` pins, in a follow-up PR.
+3. After merging, tag `vX.Y.Z`, create a release and move `v1`. Callers then bump to the new SHA with `# vX.Y.Z` as the comment.
 
 [MIT](LICENSE)
