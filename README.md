@@ -44,7 +44,7 @@ flowchart LR
   zizmor.yml        zizmor settings for this repo
 mermaid-lint/       composite action: action.yml + lint.mjs, fixtures in test/
 d2-lint/            same, for D2
-scripts/            apply-repo-settings.sh
+scripts/            apply-repo-settings.sh, plus the local DevOps scripts (git/, github/, github-desktop/, shared common/)
 SECURITY.md
 ```
 
@@ -112,12 +112,14 @@ When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up
 
 ## Local DevOps scripts
 
-Run by hand on a workstation, not in CI (moved here from Organizing-Scripts). Dry runs unless `--apply`.
+Run by hand on a workstation (moved here from Organizing-Scripts); personal-domain-devops also runs `worktrees.py prune` and `repos.py` across the personal repos from its own workflows. Dry runs unless `--apply`, and `--repo` takes one or more names (comma separated or repeated) to limit any of them.
 
 | Script | What it does |
 |---|---|
 | `scripts/git/worktrees.py sync` | Fetches every repo under `~/GitHub`, fast-forwards each main checkout to `origin/<default>` and merges `origin/<default>` into each clean worktree in `~/GitHub/.worktrees`. Skips dirty trees, detached HEADs and merged branches; a conflicting merge is aborted and reported. Never pushes. |
 | `scripts/git/worktrees.py prune` | Removes worktrees and local branches whose tip is merged into `origin/<default>` or is the head of a merged PR (squash merges count; needs `gh`). Keeps anything dirty, detached or unmerged and says why. `--remote` also deletes merged branches on origin. |
+| `scripts/github/repos.py builds` | Starts the build workflows (those with a `pull_request` trigger, or the ones named with `--workflow`) on each repo's default branch, and with `--prs` on every open same-repo PR branch. Dispatches a workflow that has `workflow_dispatch`, else re-runs its latest run on that branch. Only repos you own (`--owner`, default your `gh` login). |
+| `scripts/github/repos.py sync-prs` | Merges `origin/<default>` (main or master) into every open PR branch that is behind and pushes it, in a throwaway worktree. Paths the repo's `sync-prs.yml` lists as `ci-owned-paths` take the default branch's copy. Conflicting PRs are reported and left alone (the dry run finds them too); fork and Dependabot PRs are skipped. |
 | `scripts/github-desktop/relocate.mjs` | After moving folders, rewrites the repo paths GitHub Desktop (Windows, Node 22+) stores, `github-desktop --from OLD --to NEW [--clone-dir DIR]`, or `claude-sessions` for Claude Code session paths. See its [SKILL.md](scripts/github-desktop/SKILL.md). |
 | `scripts/apply-repo-settings.sh` | See [Consumers](#consumers). |
 
