@@ -1,4 +1,4 @@
-r"""Shared plumbing for the git housekeeping scripts (scripts/git/worktrees.py).
+r"""Shared plumbing for the git housekeeping scripts (scripts/git/worktrees.py, scripts/github/repos.py).
 
 Both walk every repo under ~/GitHub plus the linked worktrees in ~/GitHub/.worktrees, fetch
 origin, and decide per tree from the same facts (default branch, clean or dirty, merged or
@@ -10,6 +10,7 @@ Import from a script in scripts/<folder>/:
     from common import gitrepos
 """
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -27,7 +28,8 @@ def add_common_args(ap):
     """The flags every git housekeeping script shares."""
     ap.add_argument("--github", type=Path, default=GITHUB, help=f"folder of repo checkouts (default {GITHUB})")
     ap.add_argument("--root", type=Path, default=WORKTREES, help=f"worktrees folder (default {WORKTREES})")
-    ap.add_argument("--repo", help="only this repo (folder name of the main checkout)")
+    ap.add_argument("--repo", action="append", metavar="NAME",
+                    help="only these repos (folder names of the main checkouts; comma separated or repeated)")
     ap.add_argument("--apply", action="store_true", help="act (default is a dry run)")
     ap.add_argument("--no-fetch", action="store_true", help="skip 'git fetch origin --prune'")
 
@@ -40,13 +42,23 @@ def linked_worktrees(repo, root):
     return [p for p in paths[1:] if p.exists() and root in p.resolve().parents]
 
 
+def selection(only):
+    """The set of repo names --repo asked for (each value may hold several, comma or space
+    separated), or None for all of them."""
+    if isinstance(only, str):
+        only = [only]
+    names = {n for value in only or [] for n in re.split(r"[\s,]+", value) if n}
+    return None if not names or names == {"all"} else names
+
+
 def discover(github, root, only=None):
     """{main checkout: [linked worktrees under root]}, covering every checkout under github
-    and any repo that owns a worktree in root."""
+    and any repo that owns a worktree in root. only: the --repo values (None = every repo)."""
+    only = selection(only)
     repos = {}
     if github.is_dir():
         for p in sorted(github.iterdir()):
-            if (p / ".git").is_dir() and (not only or p.name == only):
+            if (p / ".git").is_dir() and (not only or p.name in only):
                 repos[p] = linked_worktrees(p, root)
     if root.is_dir():
         for d in sorted(p for p in root.iterdir() if (p / ".git").is_file()):
@@ -55,8 +67,10 @@ def discover(github, root, only=None):
                 print(f"? {d.name}: not a valid worktree (skipped)")
                 continue
             repo = Path(common).parent
-            if (not only or repo.name == only) and d not in repos.setdefault(repo, []):
+            if (not only or repo.name in only) and d not in repos.setdefault(repo, []):
                 repos[repo].append(d)
+    for name in sorted((only or set()) - {r.name for r in repos}):
+        print(f"? {name}: no checkout under {github} (skipped)")
     return repos
 
 
