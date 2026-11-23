@@ -57,7 +57,8 @@ The linters check the source, not any rendered SVG.
 
 1. Change things on a branch and open a PR. [`selftest.yml`](.github/workflows/selftest.yml) runs the linters from source, checks they reject broken diagrams, and calls the read-only templates at the PR's commit.
 2. When a linter changes, bump the SHA that `diagram-lint.yml` pins to the linter's new commit, in a follow-up PR.
-3. After merging, tag the merge commit `vX.Y.Z`, create a release, and move the `v1` tag. Callers then bump to the new tag's SHA, with `# vX.Y.Z` as the comment.
+3. Merging releases it. [`release.yml`](.github/workflows/release.yml) tags the merge commit with the next `vX.Y.Z` (patch by default; label the PR `release:minor` or `release:major` for more, or `release:skip` for none), creates a release with generated notes and moves the major tag (`v1`). Merges that only touch Markdown, `LICENSE` or the ruleset release nothing. To release by hand, run **Release** from the Actions tab and pick the bump.
+4. The release then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens (or updates) a `chore/workflows-bump` PR in each consumer repo, repinning its `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z` lines to the new release. It needs the `CONSUMER_PAT` secret; a tag pushed by hand triggers it too.
 
 Dependabot bumps the actions pinned here and the linters' npm dependencies weekly.
 

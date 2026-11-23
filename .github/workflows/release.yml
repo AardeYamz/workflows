@@ -1,0 +1,109 @@
+name: Release
+
+# After each merge to main, tags the merge commit with the next version (annotated vX.Y.Z, like v1.0.0), creates a GitHub
+# release with generated notes, moves the major tag (v1) to it, then dispatches bump-consumers.yml so every consumer repo
+# gets a PR repinning to the new release.
+#
+# Which part to bump comes from the merged PR's labels: none means patch, `release:minor` or `release:major` for more, and
+# `release:skip` releases nothing. A manual run (Actions → Release → Run workflow) releases main's head with the bump you pick.
+# Merges that only touch docs release nothing (paths-ignore below), so consumers get no PR for a README edit.
+#
+# Tags and releases made with GITHUB_TOKEN start no workflows, so bump-consumers.yml's own `push: tags` trigger would not
+# fire; hence the explicit dispatch (workflow_dispatch is the one event GITHUB_TOKEN may start). A tag pushed by hand still
+# triggers bump-consumers.yml directly.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+      - .github/rulesets/**
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Part of the version to bump.
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+# One release at a time, in merge order, so two quick merges cannot pick the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: write        # creates the tag and release, moves the major tag
+      pull-requests: read    # reads the merged PR's labels
+      actions: write         # dispatches bump-consumers.yml
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0          # all tags, to find the latest version
+          persist-credentials: false
+
+      - name: Pick the next version
+        id: v
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+        run: |
+          if git tag --points-at "$SHA" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::notice::$SHA is already released ($(git tag --points-at "$SHA" | tr '\n' ' ')); nothing to do."; exit 0
+          fi
+          bump="$INPUT_BUMP"
+          if [ -z "$bump" ]; then
+            labels=$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[0].labels[]?.name] | join(",")')
+            case ",$labels," in
+              *,release:skip,*)  echo "::notice::The PR is labelled release:skip; nothing to release."; exit 0 ;;
+              *,release:major,*) bump=major ;;
+              *,release:minor,*) bump=minor ;;
+              *)                 bump=patch ;;
+            esac
+          fi
+          last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          IFS=. read -r major minor patch <<< "${last:-v0.0.0}"
+          major=${major#v}
+          case "$bump" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            *)     patch=$((patch + 1)) ;;
+          esac
+          tag="v$major.$minor.$patch"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "major=v$major" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag ($bump bump from ${last:-nothing}) at $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag and release
+        if: steps.v.outputs.tag
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          MAJOR: ${{ steps.v.outputs.major }}
+        run: |
+          # Annotated, like the existing v1.0.0. The major tag stays lightweight, like v1.
+          obj=$(gh api "repos/$GH_REPO/git/tags" -f tag="$TAG" -f message="$TAG" -f object="$SHA" -f type=commit --jq .sha)
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$obj" > /dev/null
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          if gh api "repos/$GH_REPO/git/ref/tags/$MAJOR" --silent 2>/dev/null; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$MAJOR" -f sha="$SHA" -F force=true > /dev/null
+          else
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$MAJOR" -f sha="$SHA" > /dev/null
+          fi
+          echo "Moved $MAJOR to $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Bump the consumer repos
+        if: steps.v.outputs.tag
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          gh workflow run bump-consumers.yml --ref main -f tag="$TAG"
+          echo "Dispatched bump-consumers.yml for $TAG" | tee -a "$GITHUB_STEP_SUMMARY"
