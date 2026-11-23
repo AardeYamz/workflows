@@ -30,7 +30,7 @@ name: Preview deploy
 #       uses: AardeYamz/workflows/.github/workflows/preview-deploy.yml@<sha> # <tag>
 #       with:
 #         build-workflow: pr-previews.yml
-#         main-build: npm run build        # optional: also publish the default branch
+#         main-build: npm run build        # optional; with main-output, also publishes the default branch
 #         main-output: dist
 #         pr-path: pr-{n}
 #         preview-url: https://example.com/pr-{n}/
@@ -63,11 +63,11 @@ on:
         type: string
         default: pr-{n}
       main-build:
-        description: Command that builds the default branch (repo root). Empty publishes only the PRs.
+        description: Command that builds the default branch (repo root). Empty if main-output is already committed.
         type: string
         default: ''
       main-output:
-        description: Folder main-build writes, relative to the repo root.
+        description: Folder to publish as the default branch (what main-build writes, or a committed folder), relative to the repo root. Empty publishes only the PRs.
         type: string
         default: ''
       main-dest:
@@ -197,11 +197,10 @@ jobs:
           PR_PATH: ${{ inputs.pr-path }}
           MAIN_OUTPUT: ${{ inputs.main-output }}
           MAIN_DEST: ${{ inputs.main-dest }}
-          MAIN_BUILD: ${{ inputs.main-build }}
         run: |
           mkdir -p site
-          if test -n "$MAIN_BUILD"; then
-            test -n "$MAIN_OUTPUT" && test -d "$MAIN_OUTPUT" || { echo "::error::main-output '$MAIN_OUTPUT' is not a folder"; exit 1; }
+          if test -n "$MAIN_OUTPUT"; then
+            test -d "$MAIN_OUTPUT" || { echo "::error::main-output '$MAIN_OUTPUT' is not a folder"; exit 1; }
             mkdir -p "site/$MAIN_DEST"; cp -r "$MAIN_OUTPUT/." "site/$MAIN_DEST/"
           fi
           while read -r n sha id; do
