@@ -39,10 +39,12 @@ flowchart LR
 .github/
   workflows/        reusable templates (workflow_call) and this repo's own workflows
   rulesets/         default-branch ruleset (JSON, applied with gh api)
+  repo-settings.json  repo settings every repo gets (applied by scripts/apply-repo-settings.sh)
   dependabot.yml    weekly action and npm bumps
   zizmor.yml        zizmor settings for this repo
 mermaid-lint/       composite action: action.yml + lint.mjs, fixtures in test/
 d2-lint/            same, for D2
+scripts/            apply-repo-settings.sh
 SECURITY.md
 ```
 
@@ -58,6 +60,7 @@ Every one also takes `runs-on` (default: the caller's `vars.RUNNER`, else `ubunt
 | [`codeql.yml`](.github/workflows/codeql.yml) | `languages` (`javascript-typescript,actions`) | `contents: read`, `security-events: write`, `actions: read` | CodeQL analysis, uploaded to code scanning (needs code scanning) |
 | [`dependency-review.yml`](.github/workflows/dependency-review.yml) | `fail-on-severity` (`moderate`) | `contents: read` | Fails a PR that adds a vulnerable dependency (`pull_request` only) |
 | [`actionlint.yml`](.github/workflows/actionlint.yml) | none | Lints the caller's workflow files with [actionlint](https://github.com/rhysd/actionlint) (syntax, expressions, action inputs, shellcheck on `run:` scripts) |
+| [`retry-failed.yml`](.github/workflows/retry-failed.yml) | `max-attempts` (default 3), `delay-seconds`, `max-delay-seconds` | Re-runs only the failed jobs of a run that ended in `failure`, up to `max-attempts` in all, with exponential backoff between attempts. The caller owns the `workflow_run` trigger and lists the workflows to retry. Needs `actions: write` |
 | [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base` (`main`), `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | `contents: write`, `pull-requests: write`, `actions: write` | Merges the base into each open, behind, same-repo PR; comments on conflicts; skips Dependabot PRs and merges that would change `.github/workflows/**`; can re-run workflows on each updated branch or once on the base |
 | [`bump-repos.yml`](.github/workflows/bump-repos.yml) | `repos`, `branch`, `title`, `cmd`, `paths`, `env` (secret `consumer-pat`) | Opens one PR per listed repo that runs a bump command there (repin shared workflows, pin the newest theme), on one fixed branch each. Used by this repo's `bump-consumers.yml` and yl-theme |
 | [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow` (required), `merge-method` (`squash`), `timeout-minutes` (`30`) | `contents: write`, `pull-requests: write` | Waits for a Dependabot PR's checks, then merges patch/minor and dev-only majors. Caller uses `pull_request_target` (safe: nothing from the PR is checked out) |
@@ -103,7 +106,20 @@ All private. Adding one: add its caller, then add it to Bump consumers' matrix a
 | [37-bestick-rd](https://github.com/AardeYamz/37-bestick-rd), [lam-yan-lik](https://github.com/AardeYamz/lam-yan-lik), [personal-timeline](https://github.com/AardeYamz/personal-timeline), [trips](https://github.com/AardeYamz/trips) | `diagram-lint`, `sync-prs` |
 | [personal-dns](https://github.com/AardeYamz/personal-dns), [personal-dns-acl](https://github.com/AardeYamz/personal-dns-acl), [personal-server](https://github.com/AardeYamz/personal-server) | `diagram-lint` |
 
+Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in Bump consumers' matrix with your own `gh` login (admin needed), or just the repos you pass as arguments.
+
 When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
+
+## Local DevOps scripts
+
+Run by hand on a workstation, not in CI (moved here from Organizing-Scripts). Dry runs unless `--apply`.
+
+| Script | What it does |
+|---|---|
+| `scripts/git/worktrees.py sync` | Fetches every repo under `~/GitHub`, fast-forwards each main checkout to `origin/<default>` and merges `origin/<default>` into each clean worktree in `~/GitHub/.worktrees`. Skips dirty trees, detached HEADs and merged branches; a conflicting merge is aborted and reported. Never pushes. |
+| `scripts/git/worktrees.py prune` | Removes worktrees and local branches whose tip is merged into `origin/<default>` or is the head of a merged PR (squash merges count; needs `gh`). Keeps anything dirty, detached or unmerged and says why. `--remote` also deletes merged branches on origin. |
+| `scripts/github-desktop/relocate.mjs` | After moving folders, rewrites the repo paths GitHub Desktop (Windows, Node 22+) stores, `github-desktop --from OLD --to NEW [--clone-dir DIR]`, or `claude-sessions` for Claude Code session paths. See its [SKILL.md](scripts/github-desktop/SKILL.md). |
+| `scripts/apply-repo-settings.sh` | See [Consumers](#consumers). |
 
 ## Licence
 
