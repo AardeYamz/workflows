@@ -12,6 +12,8 @@ This repo is public so that public repos can call it (GitHub doesn't let a publi
 | [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (default `true`) | Lints the caller's workflow files with [zizmor](https://docs.zizmor.sh) and uploads SARIF to code scanning. Private repos without code scanning pass `false` to get annotations and a failing job instead |
 | [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base`, `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | Merges the base branch into each open, behind, same-repo PR. Comments on conflicts, skips Dependabot PRs and merges that would change `.github/workflows/**`, and can re-run workflows on each updated branch or once on the base branch |
 | [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow`, `merge-method`, `timeout-minutes` | Waits for a Dependabot PR's checks, then merges patch/minor bumps and dev-only majors |
+| [`codeql.yml`](.github/workflows/codeql.yml) | `languages` (default `javascript-typescript,actions`) | CodeQL analysis of the caller's code, uploaded to code scanning |
+| [`dependency-review.yml`](.github/workflows/dependency-review.yml) | `fail-on-severity` (default `moderate`) | Fails a pull request that adds a vulnerable dependency |
 
 Every workflow also takes `runs-on`. Left empty, it uses the caller's `vars.RUNNER`, else `ubuntu-26.04`. Each file's header comment includes a sample caller and the permissions the caller must grant. A called job can't ask for more permissions than its caller grants, so grant everything listed.
 
@@ -22,6 +24,18 @@ jobs:
     with:
       d2: true
 ```
+
+## Security and branch protection
+
+- [`scorecard.yml`](.github/workflows/scorecard.yml) runs OpenSSF Scorecard on this repo weekly and on `main`, in this repo only (Scorecard won't publish from a reusable workflow).
+- [`.github/rulesets/default-branch-protection.json`](.github/rulesets/default-branch-protection.json) is the default-branch ruleset: no deletion or force-push, PRs required with resolved threads, strict required checks (self-test, zizmor, CodeQL, dependency review) and a code scanning gate. Repo admins can bypass through a PR only. Apply or update it with:
+
+```
+gh api repos/AardeYamz/workflows/rulesets --method POST --input .github/rulesets/default-branch-protection.json
+gh api repos/AardeYamz/workflows/rulesets/<id> --method PUT --input .github/rulesets/default-branch-protection.json
+```
+
+Secret scanning and push protection are enabled in the repo settings.
 
 ## Diagram linters
 
