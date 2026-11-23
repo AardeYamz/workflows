@@ -1,66 +1,104 @@
 # workflows
 
-Shared GitHub Actions for AardeYamz repos: reusable workflows and the diagram linters they run. Each repo keeps a short caller workflow with its own triggers, concurrency and permissions, and `uses:` a template from here pinned by SHA, so CI logic and action bumps live in one place.
+[![Self-test](https://github.com/AardeYamz/workflows/actions/workflows/selftest.yml/badge.svg)](https://github.com/AardeYamz/workflows/actions/workflows/selftest.yml)
+[![Release](https://img.shields.io/github/v/release/AardeYamz/workflows?sort=semver&logo=github)](https://github.com/AardeYamz/workflows/releases/latest)
+[![Bump consumers](https://github.com/AardeYamz/workflows/actions/workflows/bump-consumers.yml/badge.svg)](https://github.com/AardeYamz/workflows/actions/workflows/bump-consumers.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AardeYamz/workflows/badge)](https://scorecard.dev/viewer/?uri=github.com/AardeYamz/workflows)
+[![zizmor](https://img.shields.io/badge/workflows-zizmor-6E40C9)](https://docs.zizmor.sh)
+[![Mermaid](https://img.shields.io/badge/Mermaid-12.3-FF3670?logo=mermaid&logoColor=white)](https://mermaid.js.org)
+[![D2](https://img.shields.io/badge/D2.js-0.1-2A2A72)](https://www.npmjs.com/package/@terrastruct/d2)
+[![Node](https://img.shields.io/badge/Node-LTS-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Dependabot](https://img.shields.io/badge/dependencies-Dependabot-025E8C?logo=dependabot&logoColor=white)](.github/dependabot.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repo is public so that public repos can call it (GitHub doesn't let a public repo use a private repo's workflows or actions). Keep it free of secrets, hostnames and anything else repo-specific: those belong in the callers.
+Shared GitHub Actions for the AardeYamz repos: reusable workflows and the diagram linters they run. Each repo keeps a short caller workflow (its own triggers, concurrency and permissions) that `uses:` a template from here pinned by SHA, so CI logic and action bumps live in one place.
+
+Public on purpose: a public repo can't use a private repo's workflows. Keep it free of secrets, hostnames and anything repo-specific; those belong in the callers.
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph here["AardeYamz/workflows"]
+        pr["PR"] -->|"Self-test passes"| merge["merge to main"]
+        merge --> rel["release.yml: tag vX.Y.Z, release, move v1"]
+        rel -->|"dispatch"| bump["bump-consumers.yml"]
+        tpl["reusable workflows and linters"]
+    end
+    bump -->|"opens chore/workflows-bump PR"| callers["consumer repos"]
+    callers -->|"uses: ...@sha"| tpl
+```
+
+1. A PR here runs [`selftest.yml`](.github/workflows/selftest.yml): the linters from source, their broken-diagram fixtures, and the templates at the PR's commit.
+2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE` or the ruleset release nothing. **Run workflow** on Release does it by hand.
+3. It then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens or updates a `chore/workflows-bump` PR in each consumer, repinning `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z`. Needs the `CONSUMER_PAT` secret (fine-grained: Contents, Pull requests and Workflows write on the consumers). Consumers merge it like any other PR.
+
+## Repo layout
+
+```
+.github/
+  workflows/        reusable templates (workflow_call) and this repo's own workflows
+  rulesets/         default-branch ruleset (JSON, applied with gh api)
+  dependabot.yml    weekly action and npm bumps
+  zizmor.yml        zizmor settings for this repo
+mermaid-lint/       composite action: action.yml + lint.mjs, fixtures in test/
+d2-lint/            same, for D2
+SECURITY.md
+```
 
 ## Reusable workflows
 
-| Workflow | Inputs | What it does |
-|---|---|---|
-| [`diagram-lint.yml`](.github/workflows/diagram-lint.yml) | `mermaid` (default `true`), `d2` (default `false`) | Runs [`mermaid-lint`](mermaid-lint/) and/or [`d2-lint`](d2-lint/) on the caller's repo |
-| [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (default `true`) | Lints the caller's workflow files with [zizmor](https://docs.zizmor.sh) and uploads SARIF to code scanning. Private repos without code scanning pass `false` to get annotations and a failing job instead |
-| [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base`, `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | Merges the base branch into each open, behind, same-repo PR. Comments on conflicts, skips Dependabot PRs and merges that would change `.github/workflows/**`, and can re-run workflows on each updated branch or once on the base branch |
-| [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow`, `merge-method`, `timeout-minutes` | Waits for a Dependabot PR's checks, then merges patch/minor bumps and dev-only majors |
-| [`codeql.yml`](.github/workflows/codeql.yml) | `languages` (default `javascript-typescript,actions`) | CodeQL analysis of the caller's code, uploaded to code scanning |
-| [`dependency-review.yml`](.github/workflows/dependency-review.yml) | `fail-on-severity` (default `moderate`) | Fails a pull request that adds a vulnerable dependency |
+Every one also takes `runs-on` (default: the caller's `vars.RUNNER`, else `ubuntu-26.04`). Each file's header has a sample caller. Grant every permission listed: a called job can't get more than its caller grants.
 
-Every workflow also takes `runs-on`. Left empty, it uses the caller's `vars.RUNNER`, else `ubuntu-26.04`. Each file's header comment includes a sample caller and the permissions the caller must grant. A called job can't ask for more permissions than its caller grants, so grant everything listed.
+| Workflow | Inputs | Caller grants | What it does |
+|---|---|---|---|
+| [`diagram-lint.yml`](.github/workflows/diagram-lint.yml) | `mermaid` (`true`), `d2` (`false`) | `contents: read` | Runs `mermaid-lint` and/or `d2-lint` |
+| [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (`true`) | `contents: read`, `security-events: write`, `actions: read` | Lints workflow files with zizmor and uploads SARIF; `false` for private repos without code scanning (annotations and a failing job instead) |
+| [`codeql.yml`](.github/workflows/codeql.yml) | `languages` (`javascript-typescript,actions`) | `contents: read`, `security-events: write`, `actions: read` | CodeQL analysis, uploaded to code scanning (needs code scanning) |
+| [`dependency-review.yml`](.github/workflows/dependency-review.yml) | `fail-on-severity` (`moderate`) | `contents: read` | Fails a PR that adds a vulnerable dependency (`pull_request` only) |
+| [`sync-prs.yml`](.github/workflows/sync-prs.yml) | `base` (`main`), `ci-owned-paths`, `dispatch-workflows`, `dispatch-on-base` | `contents: write`, `pull-requests: write`, `actions: write` | Merges the base into each open, behind, same-repo PR; comments on conflicts; skips Dependabot PRs and merges that would change `.github/workflows/**`; can re-run workflows on each updated branch or once on the base |
+| [`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) | `required-workflow` (required), `merge-method` (`squash`), `timeout-minutes` (`30`) | `contents: write`, `pull-requests: write` | Waits for a Dependabot PR's checks, then merges patch/minor and dev-only majors. Caller uses `pull_request_target` (safe: nothing from the PR is checked out) |
 
 ```yaml
 jobs:
   diagrams:
-    uses: AardeYamz/workflows/.github/workflows/diagram-lint.yml@<sha> # v1.0.0
+    uses: AardeYamz/workflows/.github/workflows/diagram-lint.yml@<sha> # v1.0.1
     with:
       d2: true
 ```
 
-## Security and branch protection
+## Workflows this repo runs itself
 
-- [`scorecard.yml`](.github/workflows/scorecard.yml) runs OpenSSF Scorecard on this repo weekly and on `main`, in this repo only (Scorecard won't publish from a reusable workflow).
-- [`.github/rulesets/default-branch-protection.json`](.github/rulesets/default-branch-protection.json) is the default-branch ruleset: no deletion or force-push, PRs required with resolved threads, strict required checks (self-test, zizmor, CodeQL, dependency review) and a code scanning gate. Repo admins can bypass through a PR only. Apply or update it with:
+| Workflow | Runs on | What it does |
+|---|---|---|
+| [`selftest.yml`](.github/workflows/selftest.yml) | PR, push to `main`, manual | Linters from source and their fixtures, then `diagram-lint`, `zizmor`, `codeql` and `dependency-review` called locally (`./`); these are the required checks |
+| [`release.yml`](.github/workflows/release.yml) | Push to `main`, manual | Tags and releases the next version, moves `v1`, dispatches Bump consumers |
+| [`bump-consumers.yml`](.github/workflows/bump-consumers.yml) | Dispatched by Release, a pushed `vX.Y.Z` tag, manual | Repin PR in each consumer repo |
+| [`sync-main.yml`](.github/workflows/sync-main.yml) | Push to `main`, manual | Calls `sync-prs.yml` here, then re-runs Self-test on each updated PR |
+| [`scorecard.yml`](.github/workflows/scorecard.yml) | Weekly, push to `main`, branch protection changes, manual | OpenSSF Scorecard (repo-only; Scorecard won't publish from a reusable workflow) |
 
-```
-gh api repos/AardeYamz/workflows/rulesets --method POST --input .github/rulesets/default-branch-protection.json
-gh api repos/AardeYamz/workflows/rulesets/<id> --method PUT --input .github/rulesets/default-branch-protection.json
-```
-
-Secret scanning and push protection are enabled in the repo settings.
+The [ruleset](.github/rulesets/default-branch-protection.json) blocks deletion and force-push on `main`, requires PRs with resolved threads, the Self-test checks and a code scanning gate; admins bypass through a PR only. Apply it with `gh api repos/AardeYamz/workflows/rulesets --method POST --input .github/rulesets/default-branch-protection.json` (`/rulesets/<id> --method PUT` to update). Secret scanning and push protection are on.
 
 ## Diagram linters
 
-Both are composite actions as well: `uses: AardeYamz/workflows/mermaid-lint@<sha>` (or `d2-lint`), after `actions/checkout`.
-
-- **`mermaid-lint/`** parses every ```mermaid block in the repo's tracked `*.md` files with `mermaid.parse` (jsdom supplies the DOM).
-- **`d2-lint/`** compiles every tracked `*.d2` file and every ```d2 block with [D2.js](https://www.npmjs.com/package/@terrastruct/d2), the official WASM build of d2, so no binary is needed. Compiling includes the layout, so it also catches unknown keywords and bad references. `@import`s between tracked `.d2` files resolve.
-
-Each prints `file:line: message` for every broken diagram, writes `::error` annotations under Actions, and exits 1 if any fail. To run them locally from the repo whose diagrams you edited, with this repo cloned next to it:
+Also usable directly: `uses: AardeYamz/workflows/mermaid-lint@<sha>` (or `d2-lint`), after `actions/checkout`. `mermaid-lint` parses every mermaid block in tracked `*.md` files (jsdom supplies the DOM); `d2-lint` compiles every tracked `*.d2` file and d2 block with D2.js, the WASM build of d2, layout included, with `@import`s between tracked files resolved. Each prints `file:line: message`, adds `::error` annotations and exits 1 on any failure. Locally, from the repo you edited, with this one cloned next to it:
 
 ```
 npm ci --prefix ../workflows/mermaid-lint && node ../workflows/mermaid-lint/lint.mjs
 npm ci --prefix ../workflows/d2-lint && node ../workflows/d2-lint/lint.mjs
 ```
 
-The linters check the source, not any rendered SVG.
+## Consumers
 
-## Releasing
+All private. Adding one: add its caller, then add it to Bump consumers' matrix and to the `CONSUMER_PAT` token's repositories.
 
-1. Change things on a branch and open a PR. [`selftest.yml`](.github/workflows/selftest.yml) runs the linters from source, checks they reject broken diagrams, and calls the read-only templates at the PR's commit.
-2. When a linter changes, bump the SHA that `diagram-lint.yml` pins to the linter's new commit, in a follow-up PR.
-3. Merging releases it. [`release.yml`](.github/workflows/release.yml) tags the merge commit with the next `vX.Y.Z` (patch by default; label the PR `release:minor` or `release:major` for more, or `release:skip` for none), creates a release with generated notes and moves the major tag (`v1`). Merges that only touch Markdown, `LICENSE` or the ruleset release nothing. To release by hand, run **Release** from the Actions tab and pick the bump.
-4. The release then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens (or updates) a `chore/workflows-bump` PR in each consumer repo, repinning its `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z` lines to the new release. It needs the `CONSUMER_PAT` secret; a tag pushed by hand triggers it too.
+| Repo | Calls |
+|---|---|
+| [personal-domain-devops](https://github.com/AardeYamz/personal-domain-devops) | `diagram-lint`, `zizmor` |
+| [37-bestick-rd](https://github.com/AardeYamz/37-bestick-rd), [lam-yan-lik](https://github.com/AardeYamz/lam-yan-lik), [personal-timeline](https://github.com/AardeYamz/personal-timeline), [trips](https://github.com/AardeYamz/trips) | `diagram-lint`, `sync-prs` |
+| [personal-dns](https://github.com/AardeYamz/personal-dns), [personal-dns-acl](https://github.com/AardeYamz/personal-dns-acl), [personal-server](https://github.com/AardeYamz/personal-server) | `diagram-lint` |
 
-Dependabot bumps the actions pinned here and the linters' npm dependencies weekly.
+When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
 
 ## Licence
 
