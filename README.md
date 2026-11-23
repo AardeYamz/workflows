@@ -105,6 +105,17 @@ All private. Adding one: add its caller, then add it to Bump consumers' matrix a
 
 When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
 
+## Local DevOps scripts
+
+Run by hand on a workstation, not in CI (moved here from Organizing-Scripts). Dry runs unless `--apply`.
+
+| Script | What it does |
+|---|---|
+| `scripts/git/worktrees.py sync` | Fetches every repo under `~/GitHub`, fast-forwards each main checkout to `origin/<default>` and merges `origin/<default>` into each clean worktree in `~/GitHub/.worktrees`. Skips dirty trees, detached HEADs and merged branches; a conflicting merge is aborted and reported. Never pushes. |
+| `scripts/git/worktrees.py prune` | Removes worktrees and local branches whose tip is merged into `origin/<default>` or is the head of a merged PR (squash merges count; needs `gh`). Keeps anything dirty, detached or unmerged and says why. `--remote` also deletes merged branches on origin. |
+| `scripts/github-desktop/relocate.mjs` | After moving folders, rewrites the repo paths GitHub Desktop (Windows, Node 22+) stores, `github-desktop --from OLD --to NEW [--clone-dir DIR]`, or `claude-sessions` for Claude Code session paths. See its [SKILL.md](scripts/github-desktop/SKILL.md). |
+| `scripts/apply-repo-settings.sh` | See [Consumers](#consumers). |
+
 ## Licence
 
 [MIT](LICENSE)
