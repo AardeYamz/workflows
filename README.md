@@ -39,10 +39,12 @@ flowchart LR
 .github/
   workflows/        reusable templates (workflow_call) and this repo's own workflows
   rulesets/         default-branch ruleset (JSON, applied with gh api)
+  repo-settings.json  repo settings every repo gets (applied by scripts/apply-repo-settings.sh)
   dependabot.yml    weekly action and npm bumps
   zizmor.yml        zizmor settings for this repo
 mermaid-lint/       composite action: action.yml + lint.mjs, fixtures in test/
 d2-lint/            same, for D2
+scripts/            apply-repo-settings.sh
 SECURITY.md
 ```
 
@@ -102,6 +104,8 @@ All private. Adding one: add its caller, then add it to Bump consumers' matrix a
 | [personal-domain-devops](https://github.com/AardeYamz/personal-domain-devops) | `diagram-lint`, `zizmor` |
 | [37-bestick-rd](https://github.com/AardeYamz/37-bestick-rd), [lam-yan-lik](https://github.com/AardeYamz/lam-yan-lik), [personal-timeline](https://github.com/AardeYamz/personal-timeline), [trips](https://github.com/AardeYamz/trips) | `diagram-lint`, `sync-prs` |
 | [personal-dns](https://github.com/AardeYamz/personal-dns), [personal-dns-acl](https://github.com/AardeYamz/personal-dns-acl), [personal-server](https://github.com/AardeYamz/personal-server) | `diagram-lint` |
+
+Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in Bump consumers' matrix with your own `gh` login (admin needed), or just the repos you pass as arguments.
 
 When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
 
