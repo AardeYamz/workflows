@@ -65,9 +65,9 @@ jobs:
             labels=$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[0].labels[]?.name] | join(",")')
             case ",$labels," in
               *,release:skip,*)  echo "::notice::The PR is labelled release:skip; nothing to release."; exit 0 ;;
-              *,release:major,*) bump=major ;;
-              *,release:minor,*) bump=minor ;;
-              *)                 bump=patch ;;
+              *,release:major,*) bump="major" ;;
+              *,release:minor,*) bump="minor" ;;
+              *)                 bump="patch" ;;
             esac
           fi
           last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)

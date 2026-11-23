@@ -93,8 +93,9 @@ jobs:
         id: merge
         run: |
           set -f   # ci-owned-paths may hold globs for git, which the shell must not expand
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           base_sha=$(git rev-parse --short "origin/$BASE")
