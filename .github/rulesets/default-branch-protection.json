@@ -1,5 +1,5 @@
 {
-  "name": "main-protection-v3",
+  "name": "default-branch-protection",
   "target": "branch",
   "enforcement": "active",
   "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },

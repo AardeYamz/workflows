@@ -28,11 +28,11 @@ jobs:
 ## Security and branch protection
 
 - [`scorecard.yml`](.github/workflows/scorecard.yml) runs OpenSSF Scorecard on this repo weekly and on `main`, in this repo only (Scorecard won't publish from a reusable workflow).
-- [`.github/rulesets/main-v3.json`](.github/rulesets/main-v3.json) is the `main` ruleset (v3): no deletion or force-push, PRs required with resolved threads, strict required checks (self-test, zizmor, CodeQL, dependency review) and a code scanning gate. Repo admins can bypass through a PR only. Apply or update it with:
+- [`.github/rulesets/default-branch-protection.json`](.github/rulesets/default-branch-protection.json) is the default-branch ruleset: no deletion or force-push, PRs required with resolved threads, strict required checks (self-test, zizmor, CodeQL, dependency review) and a code scanning gate. Repo admins can bypass through a PR only. Apply or update it with:
 
 ```
-gh api repos/AardeYamz/workflows/rulesets --method POST --input .github/rulesets/main-v3.json
-gh api repos/AardeYamz/workflows/rulesets/<id> --method PUT --input .github/rulesets/main-v3.json
+gh api repos/AardeYamz/workflows/rulesets --method POST --input .github/rulesets/default-branch-protection.json
+gh api repos/AardeYamz/workflows/rulesets/<id> --method PUT --input .github/rulesets/default-branch-protection.json
 ```
 
 Secret scanning and push protection are enabled in the repo settings.
