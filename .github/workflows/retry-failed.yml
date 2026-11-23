@@ -6,6 +6,9 @@ name: Retry failed runs
 # failure, such as a broken build, is retried too, so list the workflows whose failures are often infrastructure (a runner
 # that starts late, a flaky download) and keep the attempts low.
 #
+# The wait before a re-run doubles with each attempt (30 s, 60 s, 120 s, ... up to max-delay-seconds), so a longer outage gets
+# more time to clear.
+#
 # Runs on the default branch's copy of the caller, with no PR code checked out: it only calls `gh run rerun`.
 # Runs from forks are skipped (their token cannot re-run anything).
 #
@@ -30,9 +33,13 @@ on:
         type: number
         default: 3
       delay-seconds:
-        description: Wait before each re-run, so a runner or service that just hiccuped can recover (at most 600).
+        description: Wait before the first re-run. It doubles with each attempt (30, 60, 120, ...), so a runner or service that just hiccuped can recover.
         type: number
         default: 30
+      max-delay-seconds:
+        description: Upper bound on the wait (at most 1800).
+        type: number
+        default: 600
       runs-on:
         description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
         type: string
@@ -48,7 +55,7 @@ jobs:
       && github.event.workflow_run.run_attempt < inputs.max-attempts
       && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
-    timeout-minutes: 15
+    timeout-minutes: 40   # covers the longest allowed wait (30 minutes) plus the re-run call
     permissions:
       actions: write
     steps:
@@ -60,9 +67,13 @@ jobs:
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           MAX: ${{ inputs.max-attempts }}
           DELAY: ${{ inputs.delay-seconds }}
+          MAX_DELAY: ${{ inputs.max-delay-seconds }}
           NAME: ${{ github.event.workflow_run.name }}
         run: |
-          delay=$(( DELAY > 600 ? 600 : DELAY ))
+          # Exponential backoff: DELAY after the first failure, then double on each further attempt, capped.
+          cap=$(( MAX_DELAY > 1800 ? 1800 : MAX_DELAY ))
+          delay=$(( DELAY << (ATTEMPT - 1) ))
+          delay=$(( delay > cap || delay < 0 ? cap : delay ))
           echo "$NAME (run $RUN_ID) failed on attempt $ATTEMPT of $MAX; re-running its failed jobs in ${delay}s"
           sleep "$delay"
           # A run that was re-run or superseded by hand in the meantime has a newer attempt: leave it alone.
