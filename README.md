@@ -40,12 +40,72 @@ flowchart LR
 
 Every workflow also takes `runs-on`. Left empty, it uses the caller's `vars.RUNNER`, else `ubuntu-26.04`. Each file's header comment has a sample caller and the permissions the caller must grant. A called job can't ask for more permissions than its caller grants, so grant everything listed.
 
+### Sample callers
+
+Copied from each file's header comment. Pin `<sha>` to the release you want and keep its tag as the comment.
+
+**`diagram-lint`** needs only `contents: read`, the default.
+
 ```yaml
 jobs:
   diagrams:
     uses: AardeYamz/workflows/.github/workflows/diagram-lint.yml@<sha> # v1.0.0
     with:
       d2: true
+```
+
+**`zizmor`** needs `contents: read`, `security-events: write` (uploads the SARIF) and `actions: read` (lets the upload read the run's metadata, needed in private repos).
+
+```yaml
+jobs:
+  zizmor:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: AardeYamz/workflows/.github/workflows/zizmor.yml@<sha> # v1.0.0
+    with:
+      advanced-security: false  # private repos without code scanning
+```
+
+**`sync-prs`** runs after a push to the base branch and needs `contents: write` (pushes the merge commit), `pull-requests: write` (comments on a PR that conflicts) and `actions: write` (dispatches workflows; required even when `dispatch-workflows` is empty).
+
+```yaml
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: sync-prs
+  cancel-in-progress: false
+jobs:
+  sync:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: AardeYamz/workflows/.github/workflows/sync-prs.yml@<sha> # v1.0.0
+    with:
+      ci-owned-paths: src/version.txt dist        # or a glob: '20*/*/version.txt'
+      dispatch-workflows: build-test.yml security.yml   # run on each updated PR branch
+      dispatch-on-base: deploy.yml                # run once on the base branch if any PR was updated
+```
+
+**`dependabot-auto-merge`** needs `contents: write` and `pull-requests: write`, and the caller must use `pull_request_target`, since Dependabot's `pull_request` runs get a read-only token. That is safe here: nothing from the PR head is checked out or run.
+
+```yaml
+on: # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    branches: [main]
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: AardeYamz/workflows/.github/workflows/dependabot-auto-merge.yml@<sha> # v1.0.0
+    with:
+      required-workflow: Build & Test
 ```
 
 ## Diagram linters
