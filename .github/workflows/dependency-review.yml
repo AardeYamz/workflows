@@ -1,0 +1,41 @@
+name: Dependency review
+
+# Fails a pull request that adds a dependency with a known vulnerability (moderate or worse) or a disallowed licence
+# change, using the repo's dependency graph. Only runs on pull_request.
+# Caller:
+#   on: pull_request
+#   jobs:
+#     dependency-review:
+#       permissions:
+#         contents: read
+#       uses: AardeYamz/workflows/.github/workflows/dependency-review.yml@<sha> # <tag>
+on:
+  workflow_call:
+    inputs:
+      fail-on-severity:
+        description: Lowest severity that fails the job (low, moderate, high, critical).
+        type: string
+        default: moderate
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Review dependencies
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+          comment-summary-in-pr: never

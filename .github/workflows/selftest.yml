@@ -3,7 +3,7 @@ name: Self-test
 # Tests this repo before any caller pins a new commit:
 #   - linters: runs mermaid-lint and d2-lint from source on this repo's fixtures, and checks that each fails on a
 #     broken diagram
-#   - diagrams, zizmor: calls the read-only templates at this commit, the way a caller would
+#   - diagrams, zizmor, codeql, dependency-review: calls the read-only templates at this commit, the way a caller would
 # sync-prs and dependabot-auto-merge push and merge, so they are only exercised by their callers.
 on:
   pull_request:
@@ -48,3 +48,16 @@ jobs:
       security-events: write
       actions: read
     uses: ./.github/workflows/zizmor.yml
+
+  codeql:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/codeql.yml
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dependency-review.yml
