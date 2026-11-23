@@ -1,0 +1,49 @@
+name: CodeQL
+
+# Static analysis of the caller's code with CodeQL, uploaded to code scanning. Needs code scanning: public repos have it,
+# private ones on a personal plan do not. The "actions" language also scans the caller's workflow files.
+# Caller (grant all three: a called job may not ask for more than its caller grants):
+#   jobs:
+#     codeql:
+#       permissions:
+#         contents: read
+#         security-events: write  # uploads the SARIF
+#         actions: read           # lets the upload read this run's metadata (needed in private repos)
+#       uses: AardeYamz/workflows/.github/workflows/codeql.yml@<sha> # <tag>
+#       with:
+#         languages: javascript-typescript,actions
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: Comma-separated CodeQL languages (javascript-typescript, python, actions, ...).
+        type: string
+        default: javascript-typescript,actions
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (CodeQL)
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: ${{ inputs.languages }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: /language:${{ inputs.languages }}
