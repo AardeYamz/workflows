@@ -1,0 +1,122 @@
+name: Bump repos
+
+# Opens one PR per listed repo that runs a bump command there and proposes the result, on one fixed branch per repo (a newer
+# run updates the open PR instead of opening another). PRs are never merged here. A repo where the command changes nothing gets
+# no PR. Used for "repin the shared workflows" (this repo's bump-consumers.yml) and "pin the newest theme" (yl-theme).
+#
+# Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the listed repos.
+# GITHUB_TOKEN cannot reach other repos, and PRs it opened would not start their CI. The command runs repo code with no
+# credentials on disk (the PAT is only handed to create-pull-request).
+#
+# Caller:
+#   jobs:
+#     bump:
+#       uses: AardeYamz/workflows/.github/workflows/bump-repos.yml@<sha> # <tag>
+#       with:
+#         branch: chore/theme-bump
+#         title: Bump theme to ${{ needs.gate.outputs.version }}
+#         body: Pins theme.json to the newest theme.
+#         repos: >-
+#           [{"repo": "trips", "runtime": "python", "cmd": "python scripts/theme.py --bump", "paths": "theme.json"},
+#            {"repo": "lam-yan-lik", "runtime": "node", "cmd": "node tools/theme.js --bump", "paths": "theme.json",
+#             "notes": "Check the preview before merging."}]
+#       secrets:
+#         consumer-pat: ${{ secrets.CONSUMER_PAT }}
+#
+# Each entry: repo (name under the owner), and optionally cmd (run in the checkout) and paths (space-separated, what to commit)
+# when they differ from the `cmd` and `paths` inputs, runtime (node, python or empty) and notes (appended to the PR body). `env` is a JSON object of extra environment for every cmd.
+on:
+  workflow_call:
+    inputs:
+      repos:
+        description: "JSON array of objects: repo, and optionally cmd, paths, runtime, notes."
+        type: string
+        required: true
+      cmd:
+        description: Default bump command for entries that have none of their own.
+        type: string
+        default: ''
+      paths:
+        description: Default space-separated paths to commit, for entries that have none of their own.
+        type: string
+        default: ''
+      branch:
+        description: Fixed branch the PRs are opened from.
+        type: string
+        required: true
+      title:
+        description: PR title and commit message.
+        type: string
+        required: true
+      body:
+        description: PR body (notes are appended per repo).
+        type: string
+        default: ''
+      env:
+        description: JSON object of extra environment variables for every cmd, such as TAG and SHA.
+        type: string
+        default: '{}'
+      owner:
+        description: Owner of the listed repos. Empty means this repo's owner.
+        type: string
+        default: ''
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+    secrets:
+      consumer-pat:
+        description: Fine-grained token with Contents and Pull requests write on the listed repos.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(inputs.repos) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.owner || github.repository_owner }}/${{ matrix.entry.repo }}
+          token: ${{ secrets.consumer-pat }}
+          persist-credentials: false
+
+      - if: matrix.entry.runtime == 'node'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+
+      - if: matrix.entry.runtime == 'python'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: 3.x
+          cache: ''
+
+      - name: Run the bump
+        env:
+          CMD: ${{ matrix.entry.cmd || inputs.cmd }}
+          EXTRA_ENV: ${{ inputs.env }}
+        run: |
+          while IFS= read -r kv; do export "${kv?}"; done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "$EXTRA_ENV")
+          eval "$CMD"
+
+      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          token: ${{ secrets.consumer-pat }}
+          branch: ${{ inputs.branch }}
+          add-paths: ${{ matrix.entry.paths || inputs.paths }}
+          commit-message: ${{ inputs.title }}
+          title: ${{ inputs.title }}
+          body: |
+            ${{ inputs.body }}
+
+            ${{ matrix.entry.notes }}
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
