@@ -1,0 +1,214 @@
+name: CI
+
+# One entry point for a repo's checks: diagram lint, workflow lint (actionlint + zizmor), CodeQL, dependency review and a
+# test job, as jobs of one run. The caller turns on what it wants. A `changes` job decides whether a pull request touched
+# anything beyond docs, and `test` is skipped (which counts as passed for required checks) when it did not, which a
+# workflow-level `paths:` filter cannot do.
+#
+# Caller (grant everything the enabled checks need: a called job may not ask for more than its caller grants):
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request:
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   concurrency:
+#     group: ci-${{ github.event.pull_request.number || github.ref }}
+#     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+#   jobs:
+#     ci:
+#       permissions:
+#         contents: read
+#         pull-requests: read     # lists a PR's changed files
+#         security-events: write  # zizmor and CodeQL upload SARIF
+#         actions: read
+#       uses: AardeYamz/workflows/.github/workflows/ci.yml@<sha> # <tag>
+#       with:
+#         d2: true
+#         node-version: 24
+#         install: npm ci
+#         test: npm test
+#
+# Check names are `ci / <job>` (e.g. `ci / test`, `ci / diagrams / mermaid`). Leave `test` empty for a repo with no tests.
+on:
+  workflow_call:
+    inputs:
+      diagrams:
+        description: Lint mermaid diagrams.
+        type: boolean
+        default: true
+      d2:
+        description: Lint D2 diagrams too.
+        type: boolean
+        default: false
+      workflow-lint:
+        description: Lint workflow files with actionlint.
+        type: boolean
+        default: true
+      zizmor:
+        description: Lint workflow files for security issues with zizmor.
+        type: boolean
+        default: true
+      zizmor-advanced-security:
+        description: Upload zizmor's SARIF to code scanning (false on private repos without it).
+        type: boolean
+        default: true
+      codeql:
+        description: Run CodeQL. Needs code scanning (public repos, or paid private).
+        type: boolean
+        default: false
+      codeql-languages:
+        description: Comma-separated CodeQL languages.
+        type: string
+        default: javascript-typescript,actions
+      dependency-review:
+        description: Review dependency changes on pull requests.
+        type: boolean
+        default: false
+      test:
+        description: Test command, run in the repo root. Empty skips the test job.
+        type: string
+        default: ''
+      install:
+        description: Install command run before the test. Empty for none.
+        type: string
+        default: ''
+      node-version:
+        description: Node version for the test job. Empty skips Node.
+        type: string
+        default: ''
+      python-version:
+        description: Python version for the test job. Empty skips Python.
+        type: string
+        default: ''
+      docs-only-paths:
+        description: >-
+          Space-separated git pathspecs that do not need the tests. A pull request that changes only these skips the test job.
+        type: string
+        default: ':(glob)**/*.md :(glob)docs/** LICENSE .gitignore'
+      timeout-minutes:
+        description: Timeout of the test job.
+        type: number
+        default: 15
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  diagrams:
+    if: inputs.diagrams
+    uses: ./.github/workflows/diagram-lint.yml
+    with:
+      d2: ${{ inputs.d2 }}
+      runs-on: ${{ inputs.runs-on }}
+
+  actionlint:
+    if: inputs.workflow-lint
+    permissions:
+      contents: read
+    uses: ./.github/workflows/actionlint.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+
+  zizmor:
+    if: inputs.zizmor
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/zizmor.yml
+    with:
+      advanced-security: ${{ inputs.zizmor-advanced-security }}
+      runs-on: ${{ inputs.runs-on }}
+
+  codeql:
+    if: inputs.codeql
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/codeql.yml
+    with:
+      languages: ${{ inputs.codeql-languages }}
+      runs-on: ${{ inputs.runs-on }}
+
+  dependency-review:
+    if: inputs.dependency-review && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dependency-review.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+
+  # Does this change need the tests? Always yes outside a pull request. In one, yes unless every changed file is docs-only.
+  changes:
+    if: inputs.test != ''
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          DOCS_ONLY: ${{ inputs.docs-only-paths }}
+        run: |
+          if test -z "$PR"; then echo "code=true" >> "$GITHUB_OUTPUT"; echo "not a pull request: test"; exit 0; fi
+          # --paginate: a PR can change more than one page (30) of files. A failed call must fail the job, not skip the tests.
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" --jq '.[].filename')
+          code=false
+          while IFS= read -r f; do
+            test -n "$f" || continue
+            doc=false
+            for g in $DOCS_ONLY; do
+              g=${g#:(glob)}
+              # shellcheck disable=SC2254  # the pattern is meant to be a glob
+              case "$f" in $g) doc=true; break ;; esac
+              # **/x also matches x at the root
+              case "$g" in '**/'*) case "$f" in ${g#'**/'}) doc=true; break ;; esac ;; esac
+              # a directory pattern such as docs/** also matches below it
+              case "$g" in */\*\*) case "$f" in "${g%\*\*}"*) doc=true; break ;; esac ;; esac
+            done
+            if ! $doc; then code=true; echo "changed: $f"; break; fi
+          done <<< "$files"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - if: inputs.python-version != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install
+        if: inputs.install != ''
+        env:
+          INSTALL: ${{ inputs.install }}
+        run: eval "$INSTALL"
+
+      - name: Test
+        env:
+          TEST: ${{ inputs.test }}
+        run: eval "$TEST"

@@ -66,3 +66,16 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/dependency-review.yml
+
+  # The one-entry-point template, with only the test job on: the others are called above on their own.
+  ci:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      diagrams: false
+      workflow-lint: false
+      zizmor: false
+      node-version: 24
+      test: node --version
