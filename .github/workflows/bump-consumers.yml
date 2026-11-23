@@ -1,0 +1,90 @@
+name: Bump consumers
+
+# After a release tag (vX.Y.Z) is pushed, opens one PR per consumer repo that moves its pinned
+# `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z` lines to the new release. A repo already on it gets no PR.
+# One fixed branch (chore/workflows-bump) per consumer: a newer release updates the open PR instead of opening another.
+# PRs are never merged here. Floating tags (v1) are ignored; only full 40-character SHA pins are rewritten.
+#
+# Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the repos below.
+# GITHUB_TOKEN cannot reach other repos, and PRs it opened would not start their CI.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to bump consumers to (default is the newest vX.Y.Z tag).
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: r
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="$INPUT_TAG"
+          [ -n "$tag" ] || { [ "$REF_TYPE" = tag ] && tag="$REF_NAME"; } \
+            || tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          sha=$(git rev-parse "refs/tags/$tag^{commit}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Bumping consumers to $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
+
+  bump:
+    needs: release
+    runs-on: ${{ vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - 37-bestick-rd
+          - lam-yan-lik
+          - personal-dns
+          - personal-dns-acl
+          - personal-domain-devops
+          - personal-server
+          - personal-timeline
+          - trips
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+      SHA: ${{ needs.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AardeYamz/${{ matrix.repo }}
+          token: ${{ secrets.CONSUMER_PAT }}
+          persist-credentials: false   # the PAT is only handed to create-pull-request
+      - name: Repin the reusable workflows
+        run: |
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml)
+          [ ${#files[@]} -gt 0 ] || exit 0
+          perl -pi -e 's{(AardeYamz/workflows/[\w./-]+@)[0-9a-f]{40}( +# +)v\d+\.\d+\.\d+}{$1$ENV{SHA}$2$ENV{TAG}}g' "${files[@]}"
+      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          token: ${{ secrets.CONSUMER_PAT }}
+          branch: chore/workflows-bump
+          add-paths: .github/workflows
+          commit-message: Bump shared workflows to ${{ needs.release.outputs.tag }}
+          title: Bump shared workflows to ${{ needs.release.outputs.tag }}
+          body: |
+            Repins the `AardeYamz/workflows` reusable workflows to `${{ needs.release.outputs.tag }}` (opened by that repo's Bump consumers workflow).
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
