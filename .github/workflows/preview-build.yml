@@ -1,0 +1,198 @@
+name: Preview build
+
+# Builds each open same-repo PR once per commit and keeps the result as an artifact `pr-<n>-<sha>`, then dispatches the
+# caller's deploy workflow (which calls preview-deploy.yml). A run builds only the PR that triggered it, plus any open PR
+# whose head nobody has built or is building, so a push to one PR is one build, not one per open PR. Builds run without
+# secrets and with persist-credentials: false; nothing here holds a deploy token.
+#
+# Generalised from v3.yannislam.org's pr-previews.yml. Why it is shaped this way: docs/centralization-plan.md.
+#
+# Caller (a pull_request-only workflow; never also `push` on all branches, and no workflow_dispatch: a push or dispatch
+# run can write the default branch's Actions cache, and this builds PR code):
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, closed]
+#   permissions:
+#     contents: read
+#   concurrency:
+#     group: pr-previews-${{ github.event.pull_request.number }}
+#     cancel-in-progress: true
+#   jobs:
+#     previews:
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#         actions: write   # lists runs and artifacts; dispatches deploy-workflow
+#       uses: AardeYamz/workflows/.github/workflows/preview-build.yml@<sha> # <tag>
+#       with:
+#         node-version: 24
+#         install: npm ci
+#         build: npm run build -- --base-href "/pr-{n}/"
+#         output: dist/site
+#         deploy-workflow: pr-previews-deploy.yml
+#
+# The caller's concurrency group must be per PR, as above, so a new push cancels only that PR's older run. A closed PR
+# builds nothing and only triggers the deploy, which drops it from the site. Dependabot PRs are not built by their own run
+# (a later run of anyone else builds them). Fork PRs are never built.
+on:
+  workflow_call:
+    inputs:
+      build:
+        description: >-
+          Build command, run in the repo root. `{n}` is replaced with the PR number (e.g. `node tools/build.js --site
+          out/pr-{n}`). The caller's own input, never PR-controlled.
+        type: string
+        required: true
+      output:
+        description: Folder the build writes, relative to the repo root. Uploaded as the preview.
+        type: string
+        required: true
+      deploy-workflow:
+        description: File name of the caller's deploy workflow (triggered by workflow_dispatch), e.g. pr-previews-deploy.yml.
+        type: string
+        required: true
+      install:
+        description: Install command run before the build, e.g. `npm ci`. Empty for none.
+        type: string
+        default: ''
+      node-version:
+        description: Node version to set up. Empty skips Node.
+        type: string
+        default: ''
+      python-version:
+        description: Python version to set up. Empty skips Python.
+        type: string
+        default: ''
+      timeout-minutes:
+        description: Timeout of each build job.
+        type: number
+        default: 15
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    # Dependabot's PRs are built by the next run of anyone else (sync-prs never pushes to them).
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+      actions: read   # looks up earlier builds and runs
+    outputs:
+      build: ${{ steps.list.outputs.build }}
+    steps:
+      # For each same-repo open PR at its head:
+      #   - a live artifact pr-<n>-<sha> exists: reuse it, build nothing;
+      #   - it is the PR that triggered this run: build it;
+      #   - another run for that head is queued or running, or already failed: leave it (it builds it or reports the failure);
+      #   - otherwise (no run, cancelled, or held for approval): build it here, so the next deploy has it.
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SELF: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # The caller's workflow file, to find other runs of it (GITHUB_WORKFLOW_REF names the caller, not this file).
+          wf=${GITHUB_WORKFLOW_REF#*/.github/workflows/}; wf=${wf%%@*}
+          prs=$(gh pr list --state open --json number,headRefOid,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not) | {n: .number, sha: .headRefOid}]')
+          build='[]'
+          while read -r n sha; do
+            test -n "$n" || continue
+            # Only a same-repo run's build of that very commit counts (a fork's run could upload any name).
+            have=$(gh api "repos/$GH_REPO/actions/artifacts?name=pr-$n-$sha&per_page=10" --jq "[.artifacts[]
+              | select((.expired | not) and .workflow_run.head_repository_id == .workflow_run.repository_id
+                       and .workflow_run.head_sha == \"$sha\")] | length")
+            if test "$have" -gt 0; then echo "PR #$n @ ${sha:0:7}: built already"; continue; fi
+            if test "$n" != "$SELF"; then
+              taken=$(gh api "repos/$GH_REPO/actions/workflows/$wf/runs?head_sha=$sha&per_page=100" \
+                --jq "[.workflow_runs[] | select(.id != $RUN_ID) | select(.status != \"completed\" or .conclusion == \"failure\")] | length")
+              if test "$taken" -gt 0; then echo "PR #$n @ ${sha:0:7}: another run has it"; continue; fi
+            fi
+            echo "PR #$n @ ${sha:0:7}: building"
+            build=$(jq -c --argjson n "$n" --arg sha "$sha" '. + [{n: $n, sha: $sha}]' <<< "$build")
+          done < <(jq -r '.[] | "\(.n) \(.sha)"' <<< "$prs")
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  # No secrets here, and PR code runs, so nothing in this job may hold a token.
+  build:
+    needs: list
+    if: needs.list.outputs.build != '[]'
+    name: build (${{ matrix.pr.n }}, ${{ matrix.pr.sha }})   # preview-deploy.yml finds a failed build by this name
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false   # one PR that does not build must not take the others down
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.build) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.pr.sha }}
+          persist-credentials: false
+
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false   # PR code runs in this job: no dependency cache to poison
+
+      - if: inputs.python-version != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ''
+
+      - name: Install
+        if: inputs.install != ''
+        env:
+          INSTALL: ${{ inputs.install }}
+        run: eval "$INSTALL"
+
+      - name: Build
+        env:
+          BUILD: ${{ inputs.build }}
+          PR: ${{ matrix.pr.n }}
+        run: eval "${BUILD//\{n\}/$PR}"
+
+      # Named by PR and commit so later runs and preview-deploy.yml can find and reuse it. A PR that sits longer than the
+      # retention is rebuilt by the next run.
+      - name: Upload the build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-${{ matrix.pr.n }}-${{ matrix.pr.sha }}
+          path: ${{ inputs.output }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # Starts the deploy once this run's builds are done, including when some failed (those PRs get a "no preview" note) and
+  # when nothing needed building (a closed PR drops out). Runs no PR code. Fork and Dependabot runs have a read-only token
+  # and cannot dispatch; the next run of anyone else publishes their state.
+  deploy:
+    needs: [list, build]
+    if: ${{ !cancelled() && needs.list.result == 'success' && needs.build.result != 'cancelled' }}
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read   # checks that the deploy workflow is on the default branch
+      actions: write   # dispatches it
+    steps:
+      - name: Dispatch the deploy on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEPLOY: ${{ inputs.deploy-workflow }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # Until the deploy workflow is on the default branch (its first PR), a dispatch has nothing to run.
+          if ! gh api "repos/$GH_REPO/contents/.github/workflows/$DEPLOY?ref=$BRANCH" --silent 2>/dev/null; then
+            echo "::notice::$DEPLOY is not on $BRANCH yet; nothing to dispatch."; exit 0
+          fi
+          gh workflow run "$DEPLOY" --ref "$BRANCH"
