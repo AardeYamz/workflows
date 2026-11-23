@@ -1,0 +1,253 @@
+name: Preview deploy
+
+# Publishes every open same-repo PR from the builds preview-build.yml keeps as artifacts (`pr-<n>-<sha>`), optionally with
+# the default branch built alongside, runs the caller's deploy command, and comments the preview link on each PR. A deploy
+# replaces the whole site, so a PR that is closed or merged drops out on the next one; there is nothing to clean up.
+#
+# The caller has only `workflow_dispatch` and `push` to the default branch as triggers, so no PR event reaches it and the
+# deploy token never meets PR code: this job only unzips built files and uploads them. preview-build.yml dispatches it after
+# each run. One concurrency group and no cancel-in-progress (set in the caller, below): GitHub keeps one deploy running and at
+# most one waiting and drops older waiting ones, so a burst of builds ends in one or two deploys, and each deploy lists the
+# open PRs itself when it starts, so the last one has every PR's newest build. It runs the default branch's copy of the
+# caller, so a change to the caller only takes effect once merged. It also runs from the default branch's cache scope, so it
+# must not restore a dependency cache.
+#
+# Caller:
+#   on:
+#     workflow_dispatch:
+#     push:
+#       branches: [main]
+#   permissions: {}
+#   concurrency:
+#     group: pr-previews-deploy
+#     cancel-in-progress: false
+#   jobs:
+#     deploy:
+#       permissions:
+#         contents: read
+#         actions: read          # lists runs and downloads their artifacts
+#         pull-requests: write   # comments the preview links
+#       uses: AardeYamz/workflows/.github/workflows/preview-deploy.yml@<sha> # <tag>
+#       with:
+#         build-workflow: pr-previews.yml
+#         main-build: npm run build        # optional: also publish the default branch
+#         main-output: dist
+#         pr-path: pr-{n}
+#         preview-url: https://example.com/pr-{n}/
+#         node-version: 24
+#         install: npm ci
+#         deploy-command: npx --yes vercel@66.6.0 deploy site --prod --yes --token "$DEPLOY_TOKEN"
+#       secrets:
+#         deploy-token: ${{ secrets.VERCEL_TOKEN }}
+#
+# The site is staged in `site/`: the default branch's build at `site/<main-dest>`, each PR at `site/<pr-path>`. `stage-command`
+# runs after staging (index page, headers, `_headers`) and `deploy-command` after that, with DEPLOY_TOKEN and DEPLOY_ACCOUNT_ID
+# in its environment. The commands come from the caller, never from a PR.
+on:
+  workflow_call:
+    inputs:
+      build-workflow:
+        description: File name of the caller's preview-build workflow (pull_request), e.g. pr-previews.yml.
+        type: string
+        required: true
+      deploy-command:
+        description: Command that publishes `site/`, run in the repo root. DEPLOY_TOKEN, DEPLOY_ACCOUNT_ID and deploy-env are set.
+        type: string
+        required: true
+      preview-url:
+        description: Preview link for the PR comment; `{n}` is the PR number.
+        type: string
+        required: true
+      pr-path:
+        description: Where each PR is staged under `site/`; `{n}` is the PR number.
+        type: string
+        default: pr-{n}
+      main-build:
+        description: Command that builds the default branch (repo root). Empty publishes only the PRs.
+        type: string
+        default: ''
+      main-output:
+        description: Folder main-build writes, relative to the repo root.
+        type: string
+        default: ''
+      main-dest:
+        description: Where the default branch is staged under `site/`. Empty is the site root.
+        type: string
+        default: ''
+      stage-command:
+        description: Command run after staging and before deploying (index page, headers). Gets the staged PR numbers in `site/.previews` (`<n> <sha7>` per line); delete nothing outside `site/`.
+        type: string
+        default: ''
+      deploy-env:
+        description: Extra non-secret environment for the commands, one KEY=value per line.
+        type: string
+        default: ''
+      install:
+        description: Install command run before main-build. Empty for none.
+        type: string
+        default: ''
+      node-version:
+        description: Node version to set up. Empty skips Node.
+        type: string
+        default: ''
+      python-version:
+        description: Python version to set up. Empty skips Python.
+        type: string
+        default: ''
+      timeout-minutes:
+        description: Timeout of the deploy job.
+        type: number
+        default: 15
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+    secrets:
+      deploy-token:
+        description: Deploy credential, exposed to deploy-command as DEPLOY_TOKEN.
+        required: false
+      deploy-account-id:
+        description: Second credential or account id, exposed as DEPLOY_ACCOUNT_ID.
+        required: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+    steps:
+      # The default branch, never the dispatching ref: this job holds the deploy token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false   # the default branch's cache scope; nothing here may restore one
+
+      - if: inputs.python-version != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ''
+
+      # For each open same-repo PR: its head's build if there is one; else, if the newest build job for that head failed, a
+      # "did not build" note; else (still building, held for approval) the PR's newest earlier build, so its preview stays up
+      # until the head's build lands and triggers the next deploy. Only artifacts from same-repo runs whose commit matches the
+      # name are used: a fork's run could upload an artifact under any name.
+      - name: Pick a build for each open PR
+        run: |
+          gh api --paginate "repos/$GH_REPO/actions/artifacts?per_page=100" --jq '
+            .artifacts[]
+            | select((.expired | not) and (.name | test("^pr-[0-9]+-[0-9a-f]{40}$")))
+            | select(.workflow_run.head_repository_id == .workflow_run.repository_id)
+            | (.name | capture("^pr-(?<n>[0-9]+)-(?<sha>[0-9a-f]{40})$")) as $m
+            | select(.workflow_run.head_sha == $m.sha)
+            | "\(.created_at) \($m.n) \($m.sha) \(.id)"' | sort -r > "$RUNNER_TEMP/artifacts.txt"
+
+          : > "$RUNNER_TEMP/staged.txt"; : > "$RUNNER_TEMP/skipped.txt"
+          gh pr list --state open --json number,headRefOid,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository | not) | "\(.number) \(.headRefOid)"' |
+          while read -r n head; do
+            pick=$(awk -v n="$n" -v s="$head" '$2 == n && $3 == s {print $3, $4; exit}' "$RUNNER_TEMP/artifacts.txt")
+            if test -z "$pick"; then
+              run=''
+              for id in $(gh api "repos/$GH_REPO/actions/workflows/$BUILD_WORKFLOW/runs?head_sha=$head&per_page=5" --jq '.workflow_runs[].id'); do
+                # A reusable workflow's job is named "<caller job> / build (<n>, <sha>)".
+                job=$(gh api "repos/$GH_REPO/actions/runs/$id/jobs?per_page=100" \
+                  --jq "[.jobs[] | select(.name | endswith(\"build ($n, $head)\"))][0] | select(. != null) | \"\(.conclusion) \(.html_url)\"")
+                test -n "$job" || continue   # that run did not build this PR; look at the one before
+                test "${job%% *}" = failure && run=${job#* }
+                break
+              done
+              if test -n "$run"; then echo "$n ${head:0:7} $run" >> "$RUNNER_TEMP/skipped.txt"; continue; fi
+              pick=$(awk -v n="$n" '$2 == n {print $3, $4; exit}' "$RUNNER_TEMP/artifacts.txt")
+            fi
+            if test -n "$pick"; then echo "$n $pick" >> "$RUNNER_TEMP/staged.txt"
+            else echo "PR #$n @ ${head:0:7}: no build yet"; fi
+          done
+          echo "Staged:"; cat "$RUNNER_TEMP/staged.txt"; echo "Did not build:"; cat "$RUNNER_TEMP/skipped.txt"
+
+      - name: Install
+        if: inputs.main-build != '' && inputs.install != ''
+        env:
+          INSTALL: ${{ inputs.install }}
+        run: eval "$INSTALL"
+
+      - name: Build the default branch
+        if: inputs.main-build != ''
+        env:
+          BUILD: ${{ inputs.main-build }}
+        run: eval "$BUILD"
+
+      - name: Stage site/
+        env:
+          PR_PATH: ${{ inputs.pr-path }}
+          MAIN_OUTPUT: ${{ inputs.main-output }}
+          MAIN_DEST: ${{ inputs.main-dest }}
+          MAIN_BUILD: ${{ inputs.main-build }}
+        run: |
+          mkdir -p site
+          if test -n "$MAIN_BUILD"; then
+            test -n "$MAIN_OUTPUT" && test -d "$MAIN_OUTPUT" || { echo "::error::main-output '$MAIN_OUTPUT' is not a folder"; exit 1; }
+            mkdir -p "site/$MAIN_DEST"; cp -r "$MAIN_OUTPUT/." "site/$MAIN_DEST/"
+          fi
+          while read -r n sha id; do
+            dir="site/${PR_PATH//\{n\}/$n}"
+            gh api "repos/$GH_REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/pr.zip"
+            mkdir -p "$dir"; unzip -q -o "$RUNNER_TEMP/pr.zip" -d "$dir"
+            test -f "$dir/index.html" || { echo "::warning::Artifact $id for PR #$n has no index.html"; rm -rf "$dir"; }
+          done < "$RUNNER_TEMP/staged.txt"
+          # Only PRs that actually landed, for stage-command and the comments.
+          while read -r n sha id; do test -f "site/${PR_PATH//\{n\}/$n}/index.html" && echo "$n ${sha:0:7}"; done \
+            < "$RUNNER_TEMP/staged.txt" > "$RUNNER_TEMP/live.txt" || true
+          cp "$RUNNER_TEMP/live.txt" site/.previews   # for stage-command; deleted before the deploy
+
+      - name: Stage extras
+        if: inputs.stage-command != ''
+        env:
+          STAGE: ${{ inputs.stage-command }}
+        run: eval "$STAGE"
+
+      - name: Deploy
+        env:
+          DEPLOY: ${{ inputs.deploy-command }}
+          DEPLOY_ENV: ${{ inputs.deploy-env }}
+          DEPLOY_TOKEN: ${{ secrets.deploy-token }}
+          DEPLOY_ACCOUNT_ID: ${{ secrets.deploy-account-id }}
+        run: |
+          rm -f site/.previews
+          while IFS= read -r kv; do test -n "$kv" && export "${kv?}"; done <<< "$DEPLOY_ENV"
+          eval "$DEPLOY"
+
+      # A marker finds this workflow's own comment; --edit-last would overwrite whichever bot comment is newest (sync-prs
+      # also comments).
+      - name: Comment the preview links
+        continue-on-error: true   # the deploy is live either way
+        env:
+          URL: ${{ inputs.preview-url }}
+        run: |
+          marker='<!-- pr-previews -->'
+          post() {
+            n=$1; body=$2
+            id=$(gh api "repos/$GH_REPO/issues/$n/comments" --paginate \
+              --jq "[.[] | select(.body | startswith(\"$marker\"))] | last | .id // empty")
+            if test -n "$id"; then gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -f body="$marker
+          $body" >/dev/null
+            else gh pr comment "$n" --body "$marker
+          $body" </dev/null; fi
+          }
+          while read -r n sha; do post "$n" "**Preview:** ${URL//\{n\}/$n} (deployed \`$sha\`)"; done < "$RUNNER_TEMP/live.txt"
+          while read -r n sha run; do post "$n" "**No preview available:** \`$sha\` did not build. [Run]($run)"; done < "$RUNNER_TEMP/skipped.txt"
