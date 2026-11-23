@@ -72,6 +72,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      security-events: write   # zizmor and codeql are nested jobs: the caller must grant what they ask for, even switched off
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       diagrams: false
