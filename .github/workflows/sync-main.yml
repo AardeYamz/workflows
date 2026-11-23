@@ -1,0 +1,26 @@
+name: Sync PRs
+
+# After a merge to main, merges main into each open PR branch that is behind, then runs the self-test on it (a push made
+# with GITHUB_TOKEN does not trigger pull_request workflows, so the new head would otherwise have no checks).
+# Calls the reusable sync-prs.yml from this same commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-prs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    permissions:
+      contents: write       # pushes the merge commit
+      pull-requests: write  # comments on a PR that conflicts
+      actions: write        # dispatches selftest.yml
+    uses: ./.github/workflows/sync-prs.yml
+    with:
+      dispatch-workflows: selftest.yml
