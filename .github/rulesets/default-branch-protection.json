@@ -30,6 +30,7 @@
           { "context": "diagrams / mermaid" },
           { "context": "diagrams / d2" },
           { "context": "zizmor / Lint workflows (zizmor)" },
+          { "context": "actionlint / Lint workflow syntax (actionlint)" },
           { "context": "codeql / Analyze (CodeQL)" },
           { "context": "dependency-review / Review dependencies" }
         ]
