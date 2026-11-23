@@ -152,4 +152,20 @@ token minting, v3's Vercel `release` / `vercel-build-warnings` (they react to Ve
 
 ## Tracking
 
-Each phase, and each consumer migration within it, gets its own GitHub issue (labels `to-do`, `code`) linked from here.
+All items are on the Personal Infra project board.
+
+| Phase | Issue |
+| --- | --- |
+| 1 | #12 Add reusable preview-build and preview-deploy workflows |
+| 1 | #13 personal-timeline, #14 trips, #15 lam-yan-lik, #16 37-bestick-rd, #17 v3.yannislam.org: move previews onto them |
+| 2 | #18 Add a reusable ci.yml |
+| 3 | #19 v3.yannislam.org inline copies onto the templates |
+| 3 | #20 Retire the old personal-domain-devops mermaid-lint |
+| 4 | #21 Make bump-consumers reusable |
+| 5 | #22 Grouped Dependabot with auto-merge everywhere |
+
+Audit findings, filed in their own repos:
+
+- AardeYamz/personal-timeline#62 (high): fork PRs built in the job that deploys with the Cloudflare token
+- AardeYamz/personal-timeline#63, AardeYamz/trips#96 (medium): floating action pins
+- AardeYamz/trips#97, AardeYamz/personal-financial-scripts#102 (low): double push + pull_request triggers
