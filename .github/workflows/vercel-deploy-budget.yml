@@ -1,0 +1,134 @@
+name: Vercel deploy budget
+
+# Counts the Vercel deployments created in a rolling window (default 24 h) and compares them with the plan's cap (Hobby: 100 a day), so the
+# limit shows up as a warning before deploys start being refused. Writes a job summary with the count, the busiest hours and the
+# top branches and projects, and fails the job at `fail-at` so the schedule's failure email is the alert.
+#
+# Rejected deploys may leave no deployment record, so the count can only approach the cap, never show it exceeded. Treat `warn-at` as
+# the real signal. The Vercel list endpoint returns at most 100 per page; the job follows `pagination.next` until the window is covered.
+#
+# The caller owns the trigger (a schedule and/or `workflow_dispatch`). The token only needs read access to deployments: create it in
+# Vercel under Account Settings > Tokens, scoped to the team, and keep it as the secret `vercel-token`. The team id is not secret.
+#
+# Caller:
+#   on:
+#     schedule:
+#       - cron: '17 * * * *'
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     budget:
+#       permissions:
+#         contents: read
+#       uses: AardeYamz/workflows/.github/workflows/vercel-deploy-budget.yml@<sha> # <tag>
+#       with:
+#         team-id: team_xxxxxxxxxxxxxxxxxxxxxxxx
+#       secrets:
+#         vercel-token: ${{ secrets.VERCEL_TOKEN }}
+on:
+  workflow_call:
+    inputs:
+      team-id:
+        description: Vercel team id (team_...) or slug that owns the projects.
+        type: string
+        required: true
+      project-ids:
+        description: Comma-separated project ids or names to count. Empty counts the whole team (the limit is per team).
+        type: string
+        default: ''
+      limit:
+        description: The plan's deployments-per-window cap (Hobby is 100 per 24 hours).
+        type: number
+        default: 100
+      warn-at:
+        description: Emit a warning annotation at or above this count.
+        type: number
+        default: 80
+      fail-at:
+        description: Fail the job at or above this count. 0 means never fail.
+        type: number
+        default: 100
+      window-hours:
+        description: Length of the rolling window, in hours.
+        type: number
+        default: 24
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+    secrets:
+      vercel-token:
+        description: Vercel API token with read access to the team's deployments.
+        required: true
+
+permissions: {}
+
+jobs:
+  budget:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Count deployments in the window
+        env:
+          VERCEL_TOKEN: ${{ secrets.vercel-token }}
+          TEAM_ID: ${{ inputs.team-id }}
+          PROJECT_IDS: ${{ inputs.project-ids }}
+          LIMIT: ${{ inputs.limit }}
+          WARN_AT: ${{ inputs.warn-at }}
+          FAIL_AT: ${{ inputs.fail-at }}
+          WINDOW_HOURS: ${{ inputs.window-hours }}
+        run: |
+          set -euo pipefail
+          now_ms=$(( $(date +%s) * 1000 ))
+          since=$(( now_ms - WINDOW_HOURS * 3600 * 1000 ))
+          until_ms=$now_ms
+          : > deployments.jsonl
+          # Newest first; each page's `pagination.next` is the `until` for the next one. Stop when a page is short or exhausted.
+          for _ in $(seq 1 50); do
+            args=(--get --silent --show-error --fail-with-body
+              -H "Authorization: Bearer $VERCEL_TOKEN"
+              --data-urlencode "teamId=$TEAM_ID"
+              --data-urlencode "since=$since"
+              --data-urlencode "until=$until_ms"
+              --data-urlencode "limit=100")
+            if [ -n "$PROJECT_IDS" ]; then args+=(--data-urlencode "projectIds=$PROJECT_IDS"); fi
+            page=$(curl "${args[@]}" https://api.vercel.com/v6/deployments)
+            jq -c '.deployments[] | {created, state, name, branch: (.meta.githubCommitRef // "-")}' <<<"$page" >> deployments.jsonl
+            next=$(jq -r '.pagination.next // empty' <<<"$page")
+            if [ -z "$next" ]; then break; fi
+            until_ms=$next
+          done
+          count=$(wc -l < deployments.jsonl)
+          echo "count=$count" >> "$GITHUB_ENV"
+          {
+            echo "## Vercel deploys in the last ${WINDOW_HOURS} h: ${count} of ${LIMIT}"
+            echo
+            echo "| State | Deployments |"
+            echo "|---|---|"
+            jq -r '.state' deployments.jsonl | sort | uniq -c | sort -rn | awk '{print "| " $2 " | " $1 " |"}'
+            echo
+            echo "**Busiest hours (UTC)**"
+            echo
+            echo '```'
+            jq -r '.created / 1000 | strftime("%m-%d %H:00")' deployments.jsonl | sort | uniq -c | sort -rn | head -5
+            echo '```'
+            echo "**By project**"
+            echo
+            echo '```'
+            jq -r '.name' deployments.jsonl | sort | uniq -c | sort -rn | head -10
+            echo '```'
+            echo "**By branch**"
+            echo
+            echo '```'
+            jq -r '.branch' deployments.jsonl | sort | uniq -c | sort -rn | head -10
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FAIL_AT" -gt 0 ] && [ "$count" -ge "$FAIL_AT" ]; then
+            echo "::error title=Vercel deploy budget::${count} deployments in ${WINDOW_HOURS} h (fail-at ${FAIL_AT}, plan cap ${LIMIT})"
+            exit 1
+          fi
+          if [ "$count" -ge "$WARN_AT" ]; then
+            echo "::warning title=Vercel deploy budget::${count} deployments in ${WINDOW_HOURS} h (warn-at ${WARN_AT}, plan cap ${LIMIT})"
+          fi
