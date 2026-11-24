@@ -5,7 +5,8 @@ name: Bump consumers
 # One fixed branch (chore/workflows-bump) per consumer: a newer release updates the open PR instead of opening another.
 # PRs are never merged here. Floating tags (v1) are ignored; only full 40-character SHA pins are rewritten.
 #
-# Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the repos below.
+# Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the repos listed in
+# .github/consumers.json.
 # GITHUB_TOKEN cannot reach other repos, and PRs it opened would not start their CI.
 on:
   push:
@@ -27,6 +28,7 @@ jobs:
     outputs:
       tag: ${{ steps.r.outputs.tag }}
       sha: ${{ steps.r.outputs.sha }}
+      repos: ${{ steps.r.outputs.repos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,6 +46,7 @@ jobs:
           sha=$(git rev-parse "refs/tags/$tag^{commit}")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "repos=$(tr -d '\n' < .github/consumers.json)" >> "$GITHUB_OUTPUT"  # one line: a step output can't span lines
           echo "Bumping consumers to $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
 
   bump:
@@ -61,10 +64,6 @@ jobs:
       title: Bump shared workflows to ${{ needs.release.outputs.tag }}
       body: Repins the `AardeYamz/workflows` reusable workflows to `${{ needs.release.outputs.tag }}` (opened by that repo's Bump consumers workflow).
       env: '{"TAG": "${{ needs.release.outputs.tag }}", "SHA": "${{ needs.release.outputs.sha }}"}'
-      repos: >-
-        [{"repo": "37-bestick-rd"}, {"repo": "lam-yan-lik"}, {"repo": "Organizing-Scripts"},
-         {"repo": "personal-dns"}, {"repo": "personal-dns-acl"}, {"repo": "personal-domain-devops"},
-         {"repo": "personal-financial-scripts"}, {"repo": "personal-server"}, {"repo": "personal-timeline"},
-         {"repo": "trips"}, {"repo": "v3.yannislam.org"}, {"repo": "yl-theme"}]
+      repos: ${{ needs.release.outputs.repos }}
     secrets:
       consumer-pat: ${{ secrets.CONSUMER_PAT }}
