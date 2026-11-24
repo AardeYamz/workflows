@@ -30,13 +30,21 @@ name: CI
 #         install: npm ci
 #         test: npm test
 #
+# Parallel tests: instead of one `test` command, pass `tests`, a JSON list; each entry becomes its own job (check name
+# `ci / tests (<name>)`) and they all run at once alongside the lint jobs, so the run takes as long as the slowest one:
+#         tests: >-
+#           [{"name": "unit", "run": "npm test"},
+#            {"name": "snapshot", "install": "npx playwright-core install --with-deps chromium", "run": "node tools/snapshot.js --compare"}]
+# Entry fields: name, run (required); install, node-version, python-version, timeout-minutes (optional; they default to
+# the inputs of the same name). `test` and `tests` can be used together.
+#
 # Check names are `ci / <job>` (e.g. `ci / test`, `ci / diagrams / mermaid`). Leave `test` empty for a repo with no tests.
 #
 # Gate: the last job, `ci / gate`, waits for every other job and fails unless every required one succeeded, so a repo can
 # require the single check `ci / gate` and never merge with a job unfinished, failed, cancelled or silently skipped.
 # By default every job the caller turned on is required. Narrow it per repo with `required`, a space-separated list of job
-# names (diagrams actionlint zizmor codeql dependency-review test), e.g. `required: diagrams actionlint test`. A required job
-# must succeed; the only skips that count as passed are `test` on a docs-only PR and `dependency-review` outside a PR.
+# names (diagrams actionlint zizmor codeql dependency-review test tests), e.g. `required: diagrams actionlint test`. A required job
+# must succeed; the only skips that count as passed are `test` and `tests` on a docs-only PR and `dependency-review` outside a PR.
 on:
   workflow_call:
     inputs:
@@ -76,6 +84,12 @@ on:
         description: Test command, run in the repo root. Empty skips the test job.
         type: string
         default: ''
+      tests:
+        description: >-
+          JSON list of parallel test jobs: [{"name": "...", "run": "...", "install": "...", "node-version": "...",
+          "python-version": "...", "timeout-minutes": 15}]. Only name and run are required.
+        type: string
+        default: ''
       install:
         description: Install command run before the test. Empty for none.
         type: string
@@ -96,7 +110,7 @@ on:
       required:
         description: >-
           Space-separated jobs that must succeed for `ci / gate` to pass (diagrams actionlint zizmor codeql
-          dependency-review test). Empty means every job the caller turned on.
+          dependency-review test tests). Empty means every job the caller turned on.
         type: string
         default: ''
       timeout-minutes:
@@ -159,7 +173,7 @@ jobs:
 
   # Does this change need the tests? Always yes outside a pull request. In one, yes unless every changed file is docs-only.
   changes:
-    if: inputs.test != ''
+    if: inputs.test != '' || inputs.tests != ''
     runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 5
     permissions:
@@ -195,9 +209,46 @@ jobs:
           done <<< "$files"
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
+  # One job per entry of `tests`, all in parallel; one failure does not cancel the others, so a run shows every failure.
+  tests:
+    needs: changes
+    if: inputs.tests != '' && needs.changes.outputs.code == 'true'
+    name: tests (${{ matrix.name }})
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: ${{ matrix.timeout-minutes || inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.tests || '[]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: matrix.node-version || inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version || inputs.node-version }}
+
+      - if: matrix.python-version || inputs.python-version != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version || inputs.python-version }}
+
+      - name: Install
+        if: matrix.install || inputs.install != ''
+        env:
+          INSTALL: ${{ matrix.install || inputs.install }}
+        run: eval "$INSTALL"
+
+      - name: Test
+        env:
+          TEST: ${{ matrix.run }}
+        run: eval "$TEST"
+
   test:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: inputs.test != '' && needs.changes.outputs.code == 'true'
     runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
@@ -230,7 +281,7 @@ jobs:
   # job succeeded, so an unfinished or failed job can never be merged past.
   gate:
     if: always()
-    needs: [diagrams, actionlint, zizmor, codeql, dependency-review, changes, test]
+    needs: [diagrams, actionlint, zizmor, codeql, dependency-review, changes, test, tests]
     runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 5
     env:
@@ -243,6 +294,7 @@ jobs:
       ENABLED_CODEQL: ${{ inputs.codeql }}
       ENABLED_DEPENDENCY_REVIEW: ${{ inputs.dependency-review }}
       ENABLED_TEST: ${{ inputs.test != '' }}
+      ENABLED_TESTS: ${{ inputs.tests != '' }}
       RESULT_DIAGRAMS: ${{ needs.diagrams.result }}
       RESULT_ACTIONLINT: ${{ needs.actionlint.result }}
       RESULT_ZIZMOR: ${{ needs.zizmor.result }}
@@ -250,6 +302,7 @@ jobs:
       RESULT_DEPENDENCY_REVIEW: ${{ needs.dependency-review.result }}
       RESULT_CHANGES: ${{ needs.changes.result }}
       RESULT_TEST: ${{ needs.test.result }}
+      RESULT_TESTS: ${{ needs.tests.result }}
     steps:
       - name: Every required job succeeded
         shell: bash
@@ -257,11 +310,11 @@ jobs:
           fail=0
           val() { local n=$1; printf '%s' "${!n}"; }
           # A job that failed or was cancelled always fails the gate, required or not.
-          for j in DIAGRAMS ACTIONLINT ZIZMOR CODEQL DEPENDENCY_REVIEW CHANGES TEST; do
+          for j in DIAGRAMS ACTIONLINT ZIZMOR CODEQL DEPENDENCY_REVIEW CHANGES TEST TESTS; do
             r=$(val "RESULT_$j")
             case "$r" in failure|cancelled) echo "::error::$j: $r"; fail=1 ;; esac
           done
-          for j in diagrams actionlint zizmor codeql dependency-review test; do
+          for j in diagrams actionlint zizmor codeql dependency-review test tests; do
             up=$(printf '%s' "$j" | tr 'a-z-' 'A-Z_')
             enabled=$(val "ENABLED_$up")
             result=$(val "RESULT_$up")
@@ -274,7 +327,7 @@ jobs:
             if test "$result" = success; then echo "ok: $j"; continue; fi
             # The only skips that count as passed.
             if test "$result" = skipped; then
-              if test "$j" = test && test "$enabled" = true && test "$CODE" != true && test "$RESULT_CHANGES" = success; then echo "ok: test skipped (docs-only change)"; continue; fi
+              if { test "$j" = test || test "$j" = tests; } && test "$enabled" = true && test "$CODE" != true && test "$RESULT_CHANGES" = success; then echo "ok: test skipped (docs-only change)"; continue; fi
               if test "$j" = dependency-review && test "$EVENT" != pull_request; then echo "ok: dependency-review skipped (not a pull request)"; continue; fi
             fi
             echo "::error::$j is required but its result is '$result'"; fail=1
