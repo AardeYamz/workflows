@@ -30,7 +30,7 @@ flowchart LR
 ```
 
 1. A PR here runs [`selftest.yml`](.github/workflows/selftest.yml): the linters from source, their broken-diagram fixtures, and the templates at the PR's commit.
-2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `consumers.json` release nothing. **Run workflow** on Release does it by hand.
+2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default, minor when the merge adds a new workflow file under `.github/workflows/`; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `consumers.json` release nothing. **Run workflow** on Release does it by hand.
 3. It then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens or updates a `chore/workflows-bump` PR in each consumer, repinning `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z`. Needs the `CONSUMER_PAT` secret (fine-grained: Contents, Pull requests and Workflows write on the consumers). Consumers merge it like any other PR.
 
 ## Repo layout
