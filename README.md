@@ -98,15 +98,20 @@ npm ci --prefix ../workflows/d2-lint && node ../workflows/d2-lint/lint.mjs
 
 ## Consumers
 
-All private. Adding one: add its caller, then add it to Bump consumers' matrix and to the `CONSUMER_PAT` token's repositories.
+All private except v3.yannislam.org. Adding one: add its caller, then add it to Bump consumers' `repos` list and to the `CONSUMER_PAT` token's repositories.
 
 | Repo | Calls |
 |---|---|
-| [personal-domain-devops](https://github.com/AardeYamz/personal-domain-devops) | `diagram-lint`, `zizmor` |
-| [37-bestick-rd](https://github.com/AardeYamz/37-bestick-rd), [lam-yan-lik](https://github.com/AardeYamz/lam-yan-lik), [personal-timeline](https://github.com/AardeYamz/personal-timeline), [trips](https://github.com/AardeYamz/trips) | `diagram-lint`, `sync-prs` |
-| [personal-dns](https://github.com/AardeYamz/personal-dns), [personal-dns-acl](https://github.com/AardeYamz/personal-dns-acl), [personal-server](https://github.com/AardeYamz/personal-server) | `diagram-lint` |
+| [37-bestick-rd](https://github.com/AardeYamz/37-bestick-rd) | `actionlint`, `diagram-lint`, `preview-build`, `preview-deploy`, `sync-prs` |
+| [lam-yan-lik](https://github.com/AardeYamz/lam-yan-lik), [personal-timeline](https://github.com/AardeYamz/personal-timeline), [trips](https://github.com/AardeYamz/trips) | `actionlint`, `dependabot-auto-merge`, `diagram-lint`, `preview-build`, `preview-deploy`, `sync-prs` |
+| [v3.yannislam.org](https://github.com/AardeYamz/v3.yannislam.org) | `actionlint`, `dependabot-auto-merge`, `dependency-review`, `diagram-lint`, `preview-build`, `preview-deploy`, `sync-prs`, `zizmor` |
+| [yl-theme](https://github.com/AardeYamz/yl-theme) | `actionlint`, `dependabot-auto-merge`, `diagram-lint`, `sync-prs` |
+| [personal-domain-devops](https://github.com/AardeYamz/personal-domain-devops) | `actionlint`, `dependabot-auto-merge`, `diagram-lint`, `zizmor` |
+| [Organizing-Scripts](https://github.com/AardeYamz/Organizing-Scripts), [personal-dns-acl](https://github.com/AardeYamz/personal-dns-acl), [personal-server](https://github.com/AardeYamz/personal-server) | `actionlint`, `dependabot-auto-merge`, `diagram-lint` |
+| [personal-dns](https://github.com/AardeYamz/personal-dns) | `actionlint`, `diagram-lint` |
+| [personal-financial-scripts](https://github.com/AardeYamz/personal-financial-scripts) | `actionlint`, `dependabot-auto-merge` |
 
-Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in Bump consumers' matrix with your own `gh` login (admin needed), or just the repos you pass as arguments.
+Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in Bump consumers' `repos` list with your own `gh` login (admin needed), or just the repos you pass as arguments.
 
 When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
 
@@ -121,7 +126,7 @@ Run by hand on a workstation (moved here from Organizing-Scripts); personal-doma
 | `scripts/github/repos.py builds` | Starts the build workflows (those with a `pull_request` trigger, or the ones named with `--workflow`) on each repo's default branch, and with `--prs` on every open same-repo PR branch. Dispatches a workflow that has `workflow_dispatch`, else re-runs its latest run on that branch. Only repos you own (`--owner`, default your `gh` login). |
 | `scripts/github/repos.py sync-prs` | Merges `origin/<default>` (main or master) into every open PR branch that is behind and pushes it, in a throwaway worktree. Paths the repo's `sync-prs.yml` lists as `ci-owned-paths` take the default branch's copy. Conflicting PRs are reported and left alone (the dry run finds them too); fork and Dependabot PRs are skipped. |
 | `scripts/github-desktop/relocate.mjs` | After moving folders, rewrites the repo paths GitHub Desktop (Windows, Node 22+) stores, `github-desktop --from OLD --to NEW [--clone-dir DIR]`, or `claude-sessions` for Claude Code session paths. See its [SKILL.md](scripts/github-desktop/SKILL.md). |
-| `scripts/apply-repo-settings.sh` | See [Consumers](#consumers). |
+| `scripts/apply-repo-settings.sh` | Applies [`.github/repo-settings.json`](.github/repo-settings.json) to this repo and every consumer; see [Consumers](#consumers). |
 
 ## Licence
 

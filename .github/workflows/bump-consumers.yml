@@ -62,7 +62,9 @@ jobs:
       body: Repins the `AardeYamz/workflows` reusable workflows to `${{ needs.release.outputs.tag }}` (opened by that repo's Bump consumers workflow).
       env: '{"TAG": "${{ needs.release.outputs.tag }}", "SHA": "${{ needs.release.outputs.sha }}"}'
       repos: >-
-        [{"repo": "37-bestick-rd"}, {"repo": "lam-yan-lik"}, {"repo": "personal-dns"}, {"repo": "personal-dns-acl"},
-         {"repo": "personal-domain-devops"}, {"repo": "personal-server"}, {"repo": "personal-timeline"}, {"repo": "trips"}]
+        [{"repo": "37-bestick-rd"}, {"repo": "lam-yan-lik"}, {"repo": "Organizing-Scripts"},
+         {"repo": "personal-dns"}, {"repo": "personal-dns-acl"}, {"repo": "personal-domain-devops"},
+         {"repo": "personal-financial-scripts"}, {"repo": "personal-server"}, {"repo": "personal-timeline"},
+         {"repo": "trips"}, {"repo": "v3.yannislam.org"}, {"repo": "yl-theme"}]
     secrets:
       consumer-pat: ${{ secrets.CONSUMER_PAT }}

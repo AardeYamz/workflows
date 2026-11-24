@@ -75,8 +75,8 @@ Add two reusable workflows, generalized from v3's `pr-previews.yml` / `pr-previe
   falling back to the PR's previous build while its new one is still running. This job holds the deploy secret and runs no
   PR code.
 
-Move `personal-domain-devops/deploy/` into this repo as `cloudflare-deploy/` (composite action) so the deploy template and
-its action version together; leave a forwarding note in personal-domain-devops until no repo uses it.
+~~Move `personal-domain-devops/deploy/` into this repo as `cloudflare-deploy/`.~~ Dropped: the deploy action is private
+infrastructure and stays in personal-domain-devops; `preview-deploy.yml` takes the deploy command as an input instead.
 
 Order: **personal-timeline first** (it also fixes the fork-PR / shared-job issue), then trips, lam-yan-lik, 37-bestick-rd,
 and v3.yannislam.org last (it already works; it just drops ~280 lines).
@@ -152,17 +152,17 @@ token minting, v3's Vercel `release` / `vercel-build-warnings` (they react to Ve
 
 ## Tracking
 
-All items are on the Personal Infra project board.
+All items are on the Personal Infra project board. Status as of 2026-11-24:
 
-| Phase | Issue |
-| --- | --- |
-| 1 | #12 Add reusable preview-build and preview-deploy workflows |
-| 1 | #13 personal-timeline, #14 trips, #15 lam-yan-lik, #16 37-bestick-rd, #17 v3.yannislam.org: move previews onto them |
-| 2 | #18 Add a reusable ci.yml |
-| 3 | #19 v3.yannislam.org inline copies onto the templates |
-| 3 | #20 Retire the old personal-domain-devops mermaid-lint |
-| 4 | #21 Make bump-consumers reusable |
-| 5 | #22 Grouped Dependabot with auto-merge everywhere |
+| Phase | Item | Status |
+| --- | --- | --- |
+| 1 | #12 Add reusable preview-build and preview-deploy workflows | Done (#11, #25) |
+| 1 | #13 personal-timeline, #14 trips, #15 lam-yan-lik, #16 37-bestick-rd, #17 v3.yannislam.org: move previews onto them | Done: all five call the templates |
+| 2 | #18 Add a reusable ci.yml | Template done (#26); no repo calls it yet. Rollout: #34 |
+| 3 | #19 v3.yannislam.org inline copies onto the templates | Done: sync-prs, zizmor, dependency-review, dependabot-auto-merge |
+| 3 | #20 Retire the old personal-domain-devops mermaid-lint | Done: `mermaid-lint/` removed there |
+| 4 | #21 Make bump-consumers reusable | Done (#27, `bump-repos.yml`); yl-theme's caller is AardeYamz/yl-theme#48 |
+| 5 | #22 Grouped Dependabot with auto-merge everywhere | Done except the auto-merge caller in 37-bestick-rd and personal-dns (#22 stays open for those) |
 
 Audit findings, filed in their own repos:
 

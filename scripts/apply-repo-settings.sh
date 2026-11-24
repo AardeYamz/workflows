@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Applies .github/repo-settings.json to this repo and every consumer in bump-consumers.yml's matrix
+# Applies .github/repo-settings.json to this repo and every consumer in bump-consumers.yml's repos list
 # (or to the repos given as arguments, as `name` or `owner/name`). Needs `gh` logged in with admin on them.
 # Repo settings can't be set from workflow YAML, so run this by hand after changing the JSON or adding a consumer.
 set -euo pipefail
