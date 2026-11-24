@@ -83,3 +83,7 @@ jobs:
       zizmor: false
       node-version: 24
       test: node --version
+      # Two parallel test jobs (ci / tests (node), ci / tests (shell)) to exercise the matrix and the gate.
+      tests: >-
+        [{"name": "node", "run": "node --version"},
+         {"name": "shell", "run": "echo parallel", "install": "true"}]

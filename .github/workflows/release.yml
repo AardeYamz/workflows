@@ -4,8 +4,9 @@ name: Release
 # release with generated notes, moves the major tag (v1) to it, then dispatches bump-consumers.yml so every consumer repo
 # gets a PR repinning to the new release.
 #
-# Which part to bump comes from the merged PR's labels: none means patch, `release:minor` or `release:major` for more, and
-# `release:skip` releases nothing. A manual run (Actions → Release → Run workflow) releases main's head with the bump you pick.
+# Which part to bump comes from the merged PR's labels: `release:minor` or `release:major` for more, and `release:skip`
+# releases nothing. With no label it is minor when the merge adds a new workflow file under .github/workflows/, else patch.
+# A manual run (Actions → Release → Run workflow) releases main's head with the bump you pick.
 # Merges that only touch docs or the consumer list release nothing (paths-ignore below), so consumers get no PR for a
 # README edit. After adding a consumer, run Bump consumers by hand to pin it to the current release.
 #
@@ -69,7 +70,13 @@ jobs:
               *,release:skip,*)  echo "::notice::The PR is labelled release:skip; nothing to release."; exit 0 ;;
               *,release:major,*) bump="major" ;;
               *,release:minor,*) bump="minor" ;;
-              *)                 bump="patch" ;;
+              *)
+                # A merge that adds a workflow file is a new feature for consumers: minor, not patch.
+                if git diff --name-only --diff-filter=A "$SHA^" "$SHA" -- '.github/workflows/*.yml' '.github/workflows/*.yaml' | grep -q .; then
+                  echo "::notice::The merge adds a workflow file; bumping minor."; bump="minor"
+                else
+                  bump="patch"
+                fi ;;
             esac
           fi
           last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)

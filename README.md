@@ -30,7 +30,7 @@ flowchart LR
 ```
 
 1. A PR here runs [`selftest.yml`](.github/workflows/selftest.yml): the linters from source, their broken-diagram fixtures, and the templates at the PR's commit.
-2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `consumers.json` release nothing. **Run workflow** on Release does it by hand.
+2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default, minor when the merge adds a new workflow file under `.github/workflows/`; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `consumers.json` release nothing. **Run workflow** on Release does it by hand.
 3. It then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens or updates a `chore/workflows-bump` PR in each consumer, repinning `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z`. Needs the `CONSUMER_PAT` secret (fine-grained: Contents, Pull requests and Workflows write on the consumers). Consumers merge it like any other PR.
 
 ## Repo layout
@@ -55,7 +55,7 @@ Every one also takes `runs-on` (default: the caller's `vars.RUNNER`, else `ubunt
 
 | Workflow | Inputs | Caller grants | What it does |
 |---|---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | `diagrams`, `d2`, `workflow-lint`, `zizmor`, `codeql`, `dependency-review`, `test`, `install`, `node-version`, `python-version`, `docs-only-paths` | One entry point: runs whichever of the checks below the caller turns on as jobs of one run, plus a test job that a docs-only PR skips (so required checks still report) |
+| [`ci.yml`](.github/workflows/ci.yml) | `diagrams`, `d2`, `workflow-lint`, `zizmor`, `codeql`, `dependency-review`, `test`, `install`, `node-version`, `python-version`, `docs-only-paths`, `required`, `tests` | One entry point: runs whichever of the checks below the caller turns on as jobs of one run, plus a test job that a docs-only PR skips (so required checks still report), and a final `ci / gate` job that fails unless every required job succeeded, so a repo can require just `ci / gate`. `required` narrows which jobs the gate waits for (default: every enabled one) |
 | [`diagram-lint.yml`](.github/workflows/diagram-lint.yml) | `mermaid` (`true`), `d2` (`false`) | `contents: read` | Runs `mermaid-lint` and/or `d2-lint` |
 | [`zizmor.yml`](.github/workflows/zizmor.yml) | `advanced-security` (`true`) | `contents: read`, `security-events: write`, `actions: read` | Lints workflow files with zizmor and uploads SARIF; `false` for private repos without code scanning (annotations and a failing job instead) |
 | [`codeql.yml`](.github/workflows/codeql.yml) | `languages` (`javascript-typescript,actions`) | `contents: read`, `security-events: write`, `actions: read` | CodeQL analysis, uploaded to code scanning (needs code scanning) |
