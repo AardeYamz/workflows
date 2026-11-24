@@ -26,9 +26,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Held at v2.4.3: the v2.6.0 container image cannot be pulled (ghcr index references deleted manifests,
-      # ossf/scorecard-action#1752). Move back to the latest release once that is fixed.
-      - uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+      # Held at v2.5.0, the newest release whose image pulls: v2.6.0's ghcr index references deleted manifests
+      # (ossf/scorecard-action#1752). Move to the latest release once that is fixed.
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
         with:
           results_file: results.sarif
           results_format: sarif
