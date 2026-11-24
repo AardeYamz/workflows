@@ -80,6 +80,10 @@ on:
         description: Review dependency changes on pull requests.
         type: boolean
         default: false
+      dependency-review-severity:
+        description: Lowest severity that fails dependency-review (low, moderate, high or critical).
+        type: string
+        default: moderate
       test:
         description: Test command, run in the repo root. Empty skips the test job.
         type: string
@@ -169,6 +173,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/dependency-review.yml
     with:
+      fail-on-severity: ${{ inputs.dependency-review-severity }}
       runs-on: ${{ inputs.runs-on }}
 
   # Does this change need the tests? Always yes outside a pull request. In one, yes unless every changed file is docs-only.
