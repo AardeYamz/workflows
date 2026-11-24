@@ -44,9 +44,11 @@ jobs:
           [ -n "$tag" ] || { [ "$REF_TYPE" = tag ] && tag="$REF_NAME"; } \
             || tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
           sha=$(git rev-parse "refs/tags/$tag^{commit}")
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "repos=$(tr -d '\n' < .github/consumers.json)" >> "$GITHUB_OUTPUT"  # one line: a step output can't span lines
+          {
+            echo "tag=$tag"
+            echo "sha=$sha"
+            echo "repos=$(tr -d '\n' < .github/consumers.json)"  # one line: a step output can't span lines
+          } >> "$GITHUB_OUTPUT"
           echo "Bumping consumers to $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
 
   bump:
