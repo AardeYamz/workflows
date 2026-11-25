@@ -1,4 +1,4 @@
-"""Smoke tests for scripts/: Node syntax, relocate.mjs argument checks, and the worktrees.py and repos.py command lines."""
+"""Smoke tests for scripts/: Node syntax, relocate.mjs argument checks, and the worktrees.py, repos.py and projects.py command lines."""
 import glob
 import os
 import shutil
@@ -138,3 +138,14 @@ class SyncPrTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectsCliTest(unittest.TestCase):
+    def test_archive_closed_is_a_dry_run_by_default(self):
+        import projects
+        p = projects.build_parser()
+        self.assertFalse(p.parse_args(["archive-closed"]).apply)
+        a = p.parse_args(["archive-closed", "--project", "2,5", "--owner", "x", "--apply"])
+        self.assertTrue(a.apply and a.project == "2,5" and a.owner == "x")
+        with self.assertRaises(SystemExit):
+            p.parse_args([])
