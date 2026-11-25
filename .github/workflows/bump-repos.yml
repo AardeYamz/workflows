@@ -1,8 +1,14 @@
 name: Bump repos
 
 # Opens one PR per listed repo that runs a bump command there and proposes the result, on one fixed branch per repo (a newer
-# run updates the open PR instead of opening another). PRs are never merged here. A repo where the command changes nothing gets
+# run updates the open PR instead of opening another). PRs are merged only with `auto-merge` (below). A repo where the command changes nothing gets
 # no PR. Used for "repin the shared workflows" (this repo's bump-consumers.yml) and "pin the newest theme" (yl-theme).
+#
+# With `auto-merge: true` the job then waits for the PR's checks (on the head commit it opened, polled through the API, so no
+# consumer runner is held) and merges once every check has finished green; a failed or cancelled check leaves the PR open and
+# fails this job. "Green" needs at least one check reported and the same all-green result on two polls in a row, so a snapshot
+# taken before the consumer's CI has queued is not mistaken for success. The merge uses the PAT, so the consumer's push
+# workflows (deploys) run as usual. There is no branch protection to lean on (`gh pr merge --auto` would merge on sight).
 #
 # Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the listed repos.
 # GITHUB_TOKEN cannot reach other repos, and PRs it opened would not start their CI. The command runs repo code with no
@@ -56,6 +62,18 @@ on:
         description: JSON object of extra environment variables for every cmd, such as TAG and SHA.
         type: string
         default: '{}'
+      auto-merge:
+        description: Wait for each PR's checks and merge it once they all pass.
+        type: boolean
+        default: false
+      merge-method:
+        description: squash, merge or rebase (with auto-merge).
+        type: string
+        default: squash
+      merge-timeout-minutes:
+        description: How long to wait for a PR's checks before giving up, in minutes (with auto-merge, at most 120).
+        type: number
+        default: 60
       owner:
         description: Owner of the listed repos. Empty means this repo's owner.
         type: string
@@ -75,7 +93,7 @@ permissions:
 jobs:
   bump:
     runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.auto-merge && 135 || 15 }}  # a ceiling; the wait itself is bounded by merge-timeout-minutes
     strategy:
       fail-fast: false
       matrix:
@@ -107,7 +125,8 @@ jobs:
           while IFS= read -r kv; do export "${kv?}"; done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "$EXTRA_ENV")
           eval "$CMD"
 
-      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+      - id: pr
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           token: ${{ secrets.consumer-pat }}
           branch: ${{ inputs.branch }}
@@ -120,3 +139,42 @@ jobs:
             ${{ matrix.entry.notes }}
 
             🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+      - name: Wait for the PR's checks, then merge
+        if: inputs.auto-merge && steps.pr.outputs.pull-request-number != '' && steps.pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.consumer-pat }}
+          REPO: ${{ inputs.owner || github.repository_owner }}/${{ matrix.entry.repo }}
+          PR: ${{ steps.pr.outputs.pull-request-number }}
+          METHOD: ${{ inputs.merge-method }}
+          WAIT_MINUTES: ${{ inputs.merge-timeout-minutes }}
+        run: |
+          case "$METHOD" in squash|merge|rebase) ;; *) echo "::error::merge-method must be squash, merge or rebase"; exit 1 ;; esac
+          tries=$(( (WAIT_MINUTES > 120 ? 120 : WAIT_MINUTES) * 2 ))
+          green_sha=''
+          for _ in $(seq 1 "$tries"); do
+            sleep 30
+            state=$(gh pr view "$PR" -R "$REPO" --json state,headRefOid --jq '"\(.state) \(.headRefOid)"')
+            read -r pr_state sha <<<"$state"
+            [ "$pr_state" = OPEN ] || { echo "PR is $pr_state; nothing to merge."; exit 0; }
+            # gh exits non-zero while checks are pending; only an empty stdout means the call itself failed.
+            checks=$(gh pr checks "$PR" -R "$REPO" --json name,bucket,workflow 2>"$RUNNER_TEMP/checks.err" || true)
+            [ -n "$checks" ] || { cat "$RUNNER_TEMP/checks.err" >&2; checks='[]'; }
+            if jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' <<<"$checks" >/dev/null; then
+              echo "::error::$REPO#$PR: a check failed; leaving the PR open for review."
+              jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | "  \(.workflow) / \(.name)"' <<<"$checks"
+              exit 1
+            fi
+            if jq -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$checks" >/dev/null; then
+              if [ "$green_sha" = "$sha" ]; then
+                gh pr merge "$PR" -R "$REPO" "--$METHOD" --match-head-commit "$sha" --delete-branch
+                echo "Merged $REPO#$PR at $sha" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              green_sha=$sha  # confirm on the next poll
+            else
+              green_sha=''
+            fi
+          done
+          echo "::error::$REPO#$PR: checks did not finish in time; leaving the PR open."
+          exit 1

@@ -3,7 +3,8 @@ name: Bump consumers
 # After a release tag (vX.Y.Z) is pushed, opens one PR per consumer repo that moves its pinned
 # `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z` lines to the new release. A repo already on it gets no PR.
 # One fixed branch (chore/workflows-bump) per consumer: a newer release updates the open PR instead of opening another.
-# PRs are never merged here. Floating tags (v1) are ignored; only full 40-character SHA pins are rewritten.
+# Each PR is merged once all of its checks pass (bump-repos.yml's auto-merge); a PR with a failing check stays open and fails
+# that repo's matrix job. Floating tags (v1) are ignored; only full 40-character SHA pins are rewritten.
 #
 # Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the repos listed in
 # .github/consumers.json.
@@ -67,5 +68,6 @@ jobs:
       body: Repins the `AardeYamz/workflows` reusable workflows to `${{ needs.release.outputs.tag }}` (opened by that repo's Bump consumers workflow).
       env: '{"TAG": "${{ needs.release.outputs.tag }}", "SHA": "${{ needs.release.outputs.sha }}"}'
       repos: ${{ needs.release.outputs.repos }}
+      auto-merge: true
     secrets:
       consumer-pat: ${{ secrets.CONSUMER_PAT }}
