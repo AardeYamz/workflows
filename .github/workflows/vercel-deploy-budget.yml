@@ -8,7 +8,7 @@ name: Vercel deploy budget
 # the real signal. The Vercel list endpoint returns at most 100 per page; the job follows `pagination.next` until the window is covered.
 #
 # The caller owns the trigger (a schedule and/or `workflow_dispatch`). The token only needs read access to deployments: create it in
-# Vercel under Account Settings > Tokens, scoped to the team, and keep it as the secret `vercel-token`. The team id is not secret.
+# Vercel under Account Settings > Tokens, scoped to the team, and keep it as the secret `vercel-token`. The team id is not secret, but may be passed as the secret `vercel-team-id` instead of the `team-id` input.
 #
 # Caller:
 #   on:
@@ -29,9 +29,9 @@ on:
   workflow_call:
     inputs:
       team-id:
-        description: Vercel team id (team_...) or slug that owns the projects.
+        description: Vercel team id (team_...) or slug that owns the projects. Give this or the secret `vercel-team-id`.
         type: string
-        required: true
+        default: ''
       project-ids:
         description: Comma-separated project ids or names to count. Empty counts the whole team (the limit is per team).
         type: string
@@ -60,6 +60,9 @@ on:
       vercel-token:
         description: Vercel API token with read access to the team's deployments.
         required: true
+      vercel-team-id:
+        description: The Vercel team id as a secret, for callers that keep it out of the workflow file. Takes precedence over the `team-id` input.
+        required: false
 
 permissions: {}
 
@@ -73,7 +76,7 @@ jobs:
       - name: Count deployments in the window
         env:
           VERCEL_TOKEN: ${{ secrets.vercel-token }}
-          TEAM_ID: ${{ inputs.team-id }}
+          TEAM_ID: ${{ secrets.vercel-team-id || inputs.team-id }}
           PROJECT_IDS: ${{ inputs.project-ids }}
           LIMIT: ${{ inputs.limit }}
           WARN_AT: ${{ inputs.warn-at }}
@@ -81,6 +84,7 @@ jobs:
           WINDOW_HOURS: ${{ inputs.window-hours }}
         run: |
           set -euo pipefail
+          [ -n "$TEAM_ID" ] || { echo "::error::Set the team-id input or the vercel-team-id secret"; exit 1; }
           now_ms=$(( $(date +%s) * 1000 ))
           since=$(( now_ms - WINDOW_HOURS * 3600 * 1000 ))
           until_ms=$now_ms
