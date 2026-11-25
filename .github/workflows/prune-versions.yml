@@ -1,0 +1,210 @@
+name: Prune versions
+
+# Deletes old versions of something a repo publishes one copy of per version: version folders (yl-theme's public/v<timestamp>/,
+# with their entries in an index such as public/versions.json) and/or version tags (v<timestamp> stamp tags).
+#
+# A version is kept if it is one of the newest `keep` (names sort as text, so use timestamp-style names), or if any repo in
+# `consumers` still mentions it anywhere in its default branch or in the head of any open PR (a theme.json pin, a hard-coded
+# favicon URL, a doc). A consumer that cannot be read fails the run, so nothing is deleted on a partial picture.
+#
+# Folders are removed in a PR (one fixed branch; a newer run updates it) so the caller's own checks and review apply. Tags are
+# deleted directly, but when `dir` is set only for versions whose folder is already gone from the default branch, so a tag
+# outlives its folder until that PR is merged. `dry-run` reports what would go and changes nothing.
+#
+# Secret consumer-pat: a fine-grained token with Contents read on the consumers (and Pull requests write on this repo, so the
+# PR it opens starts the caller's CI; without it the PR is opened with GITHUB_TOKEN and its checks do not run).
+#
+# Caller:
+#   on:
+#     schedule: [{cron: '17 4 * * 1'}]
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     prune:
+#       permissions:
+#         contents: write        # deletes tags, pushes the PR branch
+#         pull-requests: write   # opens the PR
+#       uses: AardeYamz/workflows/.github/workflows/prune-versions.yml@<sha> # <tag>
+#       with:
+#         keep: 3
+#         dir: public
+#         index: public/versions.json
+#         tags: true
+#         consumers: '["37-bestick-rd", "lam-yan-lik", "personal-timeline"]'
+#       secrets:
+#         consumer-pat: ${{ secrets.CONSUMER_PAT }}
+on:
+  workflow_call:
+    inputs:
+      keep:
+        description: How many of the newest versions are always kept (at least 1).
+        type: number
+        default: 3
+      dir:
+        description: Folder holding one sub-folder per version (e.g. public). Empty skips folders.
+        type: string
+        default: ''
+      index:
+        description: JSON file keyed by version whose entries go with their folders (e.g. public/versions.json). Empty for none.
+        type: string
+        default: ''
+      tags:
+        description: Also delete version tags.
+        type: boolean
+        default: false
+      pattern:
+        description: Extended regex a folder or tag name must match to count as a version.
+        type: string
+        default: '^v[0-9]'
+      consumers:
+        description: JSON array of repo names (under the owner) whose mentions of a version keep it.
+        type: string
+        default: '[]'
+      owner:
+        description: Owner of the consumers. Empty means this repo's owner.
+        type: string
+        default: ''
+      branch:
+        description: Branch the folder-removal PR is opened from.
+        type: string
+        default: chore/prune-versions
+      dry-run:
+        description: Report what would be deleted and change nothing.
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+    secrets:
+      consumer-pat:
+        description: Fine-grained token with Contents read on the consumers and Pull requests write on this repo.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Decide what goes
+        id: plan
+        env:
+          KEEP: ${{ inputs.keep }}
+          DIR: ${{ inputs.dir }}
+          INDEX: ${{ inputs.index }}
+          TAGS: ${{ inputs.tags }}
+          PATTERN: ${{ inputs.pattern }}
+          CONSUMERS: ${{ inputs.consumers }}
+          OWNER: ${{ inputs.owner || github.repository_owner }}
+          PAT: ${{ secrets.consumer-pat }}
+          GH_TOKEN: ${{ secrets.consumer-pat || github.token }}
+        run: |
+          set -euo pipefail
+          [ "$KEEP" -ge 1 ] || { echo "::error::keep must be at least 1"; exit 1; }
+          : > versions.txt
+          if [ -n "$DIR" ]; then
+            find "$DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -E -- "$PATTERN" >> versions.txt || true
+            if [ -n "$INDEX" ]; then keys=$(jq -r 'keys[]' "$INDEX"); grep -E -- "$PATTERN" <<< "$keys" >> versions.txt || true; fi
+          fi
+          [ "$TAGS" != true ] || git tag -l | grep -E -- "$PATTERN" >> versions.txt || true
+          sort -u -o versions.txt versions.txt
+          sort -r versions.txt | head -n "$KEEP" > keep.txt
+
+          # Every version a consumer still mentions, on its default branch or an open PR's head. Fails if one cannot be read.
+          scan=$(mktemp -d)
+          repos=$(jq -r '.[]' <<< "$CONSUMERS")  # a plain assignment, so a bad list fails the step
+          for repo in $repos; do
+            url="https://github.com/$OWNER/$repo.git"
+            [ -z "$PAT" ] || url="https://x-access-token:$PAT@github.com/$OWNER/$repo.git"
+            git init -q "$scan/$repo"
+            refs=(HEAD)
+            prs=$(gh pr list -R "$OWNER/$repo" --state open --limit 200 --json number --jq '.[].number')
+            for n in $prs; do refs+=("refs/pull/$n/head"); done
+            for ref in "${refs[@]}"; do
+              git -C "$scan/$repo" fetch -q --depth 1 "$url" "$ref" || { echo "::error::cannot read $OWNER/$repo $ref"; exit 1; }
+              git -C "$scan/$repo" grep -IhoF -f "$PWD/versions.txt" FETCH_HEAD -- . >> keep.txt || true
+            done
+            echo "scanned $OWNER/$repo (${#refs[@]} refs)"
+          done
+          rm -rf "$scan"
+          sort -u -o keep.txt keep.txt
+          comm -23 versions.txt keep.txt > drop.txt
+
+          {
+            echo "### Prune versions"
+            echo "Kept: $(paste -sd' ' keep.txt)"
+            echo
+            echo "Dropping: $(paste -sd' ' drop.txt || true)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "drop=$(paste -sd' ' drop.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Remove old folders
+        id: folders
+        if: inputs.dir != '' && steps.plan.outputs.drop != ''
+        env:
+          DIR: ${{ inputs.dir }}
+          INDEX: ${{ inputs.index }}
+          DROP: ${{ steps.plan.outputs.drop }}
+        run: |
+          set -euo pipefail
+          gone=()
+          for v in $DROP; do
+            if [ -d "$DIR/$v" ] || { [ -n "$INDEX" ] && jq -e --arg v "$v" 'has($v)' "$INDEX" >/dev/null; }; then
+              rm -rf -- "${DIR:?}/$v"; gone+=("$v")
+            fi
+          done
+          if [ -n "$INDEX" ] && [ ${#gone[@]} -gt 0 ]; then
+            jq --indent 2 --args 'delpaths([$ARGS.positional[] | [.]])' "${gone[@]}" < "$INDEX" > "$INDEX.new"
+            mv "$INDEX.new" "$INDEX"
+          fi
+          echo "gone=${gone[*]}" >> "$GITHUB_OUTPUT"
+
+      - if: inputs.dir != '' && steps.folders.outputs.gone != '' && !inputs.dry-run
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          token: ${{ secrets.consumer-pat || github.token }}
+          branch: ${{ inputs.branch }}
+          add-paths: |
+            ${{ inputs.dir }}
+            ${{ inputs.index }}
+          commit-message: Retire ${{ steps.folders.outputs.gone }}
+          title: Retire old versions
+          body: |
+            Removes ${{ steps.folders.outputs.gone }} (opened by the shared Prune versions workflow). Kept: the newest ${{ inputs.keep }}, plus every version a consumer still mentions on its default branch or an open PR.
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+      - name: Delete old tags
+        if: inputs.tags && steps.plan.outputs.drop != ''
+        env:
+          DIR: ${{ inputs.dir }}
+          DROP: ${{ steps.plan.outputs.drop }}
+          DRY: ${{ inputs.dry-run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          del=()
+          for v in $DROP; do
+            git show-ref -q --verify "refs/tags/$v" || continue
+            # With folders, a tag goes only once its folder is gone from the default branch (the PR above was merged).
+            if [ -n "$DIR" ] && git cat-file -e "HEAD:$DIR/$v" 2>/dev/null; then continue; fi
+            del+=("$v")
+          done
+          [ ${#del[@]} -gt 0 ] || { echo "no tags to delete"; exit 0; }
+          echo "tags to delete: ${del[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$DRY" != true ] || exit 0
+          for v in "${del[@]}"; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$v" --silent
+          done
