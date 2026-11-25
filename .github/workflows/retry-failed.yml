@@ -65,38 +65,59 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Re-run the failed jobs
+      # Wait first: a host that just rebooted or restarted Docker gets time to bring its runners back, and GitHub time to
+      # finish storing the failed jobs' logs, which the check reads.
+      - name: Wait
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           MAX: ${{ inputs.max-attempts }}
           DELAY: ${{ inputs.delay-seconds }}
           MAX_DELAY: ${{ inputs.max-delay-seconds }}
           NAME: ${{ github.event.workflow_run.name }}
-          ONLY_INFRA: ${{ inputs.only-infra }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          if [ "$ONLY_INFRA" = true ]; then
-            # A job is a check run with the same id. A runner that lost contact leaves an annotation and no log; one that was
-            # shut down mid-job only says so at the end of the job's log (its annotation is just "The operation was canceled").
-            lost=$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
-                --jq '.jobs[] | select(.conclusion == "failure") | .id' |
-              while read -r id; do
-                gh api "repos/$GH_REPO/check-runs/$id/annotations" --jq '.[].message' || true
-                # curl, not gh api: gh refuses to print a log that holds terminal escape sequences.
-                curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | tail -n 50 || true
-              done | grep -Eci 'runner has received a shutdown signal|lost communication with the server|was not acquired by runner' || true)
-            if [ "$lost" = 0 ]; then echo "$NAME (run $RUN_ID) failed, but no job was lost with its runner; not re-running"; exit 0; fi
-            echo "$NAME (run $RUN_ID): $lost sign(s) of a lost runner"
-          fi
           # Exponential backoff: DELAY after the first failure, then double on each further attempt, capped.
           cap=$(( MAX_DELAY > 1800 ? 1800 : MAX_DELAY ))
           delay=$(( DELAY << (ATTEMPT - 1) ))
           delay=$(( delay > cap || delay < 0 ? cap : delay ))
-          echo "$NAME (run $RUN_ID) failed on attempt $ATTEMPT of $MAX; re-running its failed jobs in ${delay}s"
+          echo "$NAME (run $RUN_ID) failed on attempt $ATTEMPT of $MAX; waiting ${delay}s"
           sleep "$delay"
+
+      - name: Check for a lost runner
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          NAME: ${{ github.event.workflow_run.name }}
+          ONLY_INFRA: ${{ inputs.only-infra }}
+        run: |
           # A run that was re-run or superseded by hand in the meantime has a newer attempt: leave it alone.
           current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq .run_attempt)
-          if [ "$current" != "$ATTEMPT" ]; then echo "run is already on attempt $current; nothing to do"; exit 0; fi
-          gh run rerun "$RUN_ID" --failed
+          if [ "$current" != "$ATTEMPT" ]; then echo "run is already on attempt $current; nothing to do"; echo "rerun=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$ONLY_INFRA" != true ]; then echo "rerun=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # A job is a check run with the same id. A runner that lost contact leaves an annotation and no log; one that was
+          # shut down mid-job only says so at the end of the job's log (its annotation is just "The operation was canceled").
+          lost=$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+              --jq '.jobs[] | select(.conclusion == "failure") | .id' |
+            while read -r id; do
+              gh api "repos/$GH_REPO/check-runs/$id/annotations" --jq '.[].message' || true
+              # curl, not gh api: gh refuses to print a log that holds terminal escape sequences.
+              curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | tail -n 50 || true
+            done | grep -Eci 'runner has received a shutdown signal|lost communication with the server|was not acquired by runner' || true)
+          if [ "$lost" = 0 ]; then
+            echo "$NAME (run $RUN_ID) failed, but no job was lost with its runner; not re-running"
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$NAME (run $RUN_ID): $lost sign(s) of a lost runner"
+            echo "rerun=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-run the failed jobs
+        if: steps.check.outputs.rerun == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh run rerun "$RUN_ID" --failed
