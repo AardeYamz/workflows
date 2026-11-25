@@ -30,7 +30,7 @@ flowchart LR
 ```
 
 1. A PR here runs [`selftest.yml`](.github/workflows/selftest.yml): the linters from source, their broken-diagram fixtures, and the templates at the PR's commit.
-2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default, minor when the merge adds a new workflow file under `.github/workflows/`; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `consumers.json` release nothing. **Run workflow** on Release does it by hand.
+2. Merging releases it: [`release.yml`](.github/workflows/release.yml) tags the next `vX.Y.Z` (patch by default, minor when the merge adds a new workflow file under `.github/workflows/`; label the PR `release:minor`, `release:major` or `release:skip`), creates a release and moves `v1`. Merges touching only Markdown, `LICENSE`, the ruleset or `repos.json` release nothing. **Run workflow** on Release does it by hand.
 3. It then dispatches [`bump-consumers.yml`](.github/workflows/bump-consumers.yml), which opens or updates a `chore/workflows-bump` PR in each consumer, repinning `uses: AardeYamz/workflows/...@<sha> # vX.Y.Z`. Needs the `CONSUMER_PAT` secret (fine-grained: Contents, Pull requests and Workflows write on the consumers). Consumers merge it like any other PR.
 
 ## Repo layout
@@ -39,7 +39,7 @@ flowchart LR
 .github/
   workflows/        reusable templates (workflow_call) and this repo's own workflows
   rulesets/         default-branch ruleset (JSON, applied with gh api)
-  consumers.json    repos Bump consumers and apply-repo-settings.sh act on
+  repos.json    the one list of personal repos: Bump consumers (all but this repo), apply-repo-settings.sh, and prune-branches and bulk-repos in personal-domain-devops
   repo-settings.json  repo settings every repo gets (applied by scripts/apply-repo-settings.sh)
   dependabot.yml    weekly action and npm bumps
   zizmor.yml        zizmor settings for this repo
@@ -101,7 +101,7 @@ npm ci --prefix ../workflows/d2-lint && node ../workflows/d2-lint/lint.mjs
 
 ## Consumers
 
-All private except v3.yannislam.org. Adding one: add its caller, then add it to [`.github/consumers.json`](.github/consumers.json) (read by Bump consumers and `apply-repo-settings.sh`) and to the `CONSUMER_PAT` token's repositories, then run **Bump consumers** by hand (editing the list releases nothing, so nothing else gets a PR).
+All private except v3.yannislam.org. Adding one: add its caller, then add it to [`.github/repos.json`](.github/repos.json) (the one repo list: read by Bump consumers, `apply-repo-settings.sh`, and the prune-branches and bulk-repos workflows in personal-domain-devops, whose `PERSONAL_REPOS_PAT` must also cover it) and to the `CONSUMER_PAT` token's repositories, then run **Bump consumers** by hand (editing the list releases nothing, so nothing else gets a PR).
 
 | Repo | Calls |
 |---|---|
@@ -114,7 +114,7 @@ All private except v3.yannislam.org. Adding one: add its caller, then add it to 
 | [personal-dns](https://github.com/AardeYamz/personal-dns) | `actionlint`, `diagram-lint` |
 | [personal-financial-scripts](https://github.com/AardeYamz/personal-financial-scripts) | `actionlint`, `dependabot-auto-merge` |
 
-Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in `consumers.json` with your own `gh` login (admin needed), or just the repos you pass as arguments.
+Repo settings that workflow YAML can't set (currently "Always suggest updating pull request branches") live in [`.github/repo-settings.json`](.github/repo-settings.json). Run `scripts/apply-repo-settings.sh` after changing it or adding a consumer; it patches this repo and every repo in `repos.json` with your own `gh` login (admin needed), or just the repos you pass as arguments.
 
 When a linter changes, bump the SHA `diagram-lint.yml` pins it to in a follow-up PR, so the next release carries it.
 

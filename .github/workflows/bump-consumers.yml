@@ -7,7 +7,7 @@ name: Bump consumers
 # that repo's matrix job. Floating tags (v1) are ignored; only full 40-character SHA pins are rewritten.
 #
 # Needs the secret CONSUMER_PAT: a fine-grained token with Contents and Pull requests write on the repos listed in
-# .github/consumers.json.
+# .github/repos.json.
 # GITHUB_TOKEN cannot reach other repos, and PRs it opened would not start their CI.
 on:
   push:
@@ -48,7 +48,7 @@ jobs:
           {
             echo "tag=$tag"
             echo "sha=$sha"
-            echo "repos=$(tr -d '\n' < .github/consumers.json)"  # one line: a step output can't span lines
+            echo "repos=$(jq -c 'map(select(.repo != "workflows"))' .github/repos.json)"  # one line: a step output can't span lines
           } >> "$GITHUB_OUTPUT"
           echo "Bumping consumers to $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
 

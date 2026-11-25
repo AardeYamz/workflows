@@ -20,7 +20,7 @@ on:
       - '**/*.md'
       - LICENSE
       - .github/rulesets/**
-      - .github/consumers.json
+      - .github/repos.json
   workflow_dispatch:
     inputs:
       bump:
