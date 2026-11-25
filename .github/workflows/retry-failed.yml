@@ -2,9 +2,11 @@ name: Retry failed runs
 
 # Re-runs only the failed jobs of a run that ended in `failure`, up to a total number of attempts. GitHub has no setting for
 # this, and a called workflow cannot define its own trigger, so the caller owns the `workflow_run` trigger and lists which
-# workflows to retry. Cancelled and timed-out runs are not retried (a newer run usually superseded a cancelled one). A real
-# failure, such as a broken build, is retried too, so list the workflows whose failures are often infrastructure (a runner
-# that starts late, a flaky download) and keep the attempts low.
+# workflows to retry. Cancelled and timed-out runs are not retried (a newer run usually superseded a cancelled one).
+#
+# By default (only-infra) a run is re-run only when one of its failed jobs was lost with its runner: the runner got a
+# shutdown signal (Docker restarted, the host rebooted) or lost contact with GitHub. A real failure, such as a broken test,
+# is left alone, so it reports at once instead of after every attempt. With only-infra: false every failure is re-run.
 #
 # The wait before a re-run doubles with each attempt (30 s, 60 s, 120 s, ... up to max-delay-seconds), so a longer outage gets
 # more time to clear.
@@ -40,6 +42,10 @@ on:
         description: Upper bound on the wait (at most 1800).
         type: number
         default: 600
+      only-infra:
+        description: Re-run only when a failed job was lost with its runner (shutdown signal, lost communication). False re-runs every failure.
+        type: boolean
+        default: true
       runs-on:
         description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
         type: string
@@ -69,7 +75,21 @@ jobs:
           DELAY: ${{ inputs.delay-seconds }}
           MAX_DELAY: ${{ inputs.max-delay-seconds }}
           NAME: ${{ github.event.workflow_run.name }}
+          ONLY_INFRA: ${{ inputs.only-infra }}
         run: |
+          if [ "$ONLY_INFRA" = true ]; then
+            # A job is a check run with the same id. A runner that lost contact leaves an annotation and no log; one that was
+            # shut down mid-job only says so at the end of the job's log (its annotation is just "The operation was canceled").
+            lost=$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+                --jq '.jobs[] | select(.conclusion == "failure") | .id' |
+              while read -r id; do
+                gh api "repos/$GH_REPO/check-runs/$id/annotations" --jq '.[].message' || true
+                # curl, not gh api: gh refuses to print a log that holds terminal escape sequences.
+                curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | tail -n 50 || true
+              done | grep -Eci 'runner has received a shutdown signal|lost communication with the server|was not acquired by runner' || true)
+            if [ "$lost" = 0 ]; then echo "$NAME (run $RUN_ID) failed, but no job was lost with its runner; not re-running"; exit 0; fi
+            echo "$NAME (run $RUN_ID): $lost sign(s) of a lost runner"
+          fi
           # Exponential backoff: DELAY after the first failure, then double on each further attempt, capped.
           cap=$(( MAX_DELAY > 1800 ? 1800 : MAX_DELAY ))
           delay=$(( DELAY << (ATTEMPT - 1) ))
