@@ -4,8 +4,8 @@ name: Bump repos
 # run updates the open PR instead of opening another). PRs are merged only with `auto-merge` (below). A repo where the command changes nothing gets
 # no PR. Used for "repin the shared workflows" (this repo's bump-consumers.yml) and "pin the newest theme" (yl-theme).
 #
-# With `auto-merge: true` the job then waits for the PR's checks (on the head commit it opened, polled once a minute through the REST API, so no
-# consumer runner is held and the GraphQL quota is left alone) and merges once every check has finished green; a failed or cancelled check leaves the PR open and
+# With `auto-merge: true` the job then waits for the PR's checks (on the head commit it opened, polled through the API, so no
+# consumer runner is held; GraphQL first, REST when its quota is spent) and merges once every check has finished green; a failed or cancelled check leaves the PR open and
 # fails this job. "Green" needs at least one check reported and the same all-green result on two polls in a row, so a snapshot
 # taken before the consumer's CI has queued is not mistaken for success. The merge uses the PAT, so the consumer's push
 # workflows (deploys) run as usual. There is no branch protection to lean on (`gh pr merge --auto` would merge on sight).
@@ -151,28 +151,46 @@ jobs:
           WAIT_MINUTES: ${{ inputs.merge-timeout-minutes }}
         run: |
           case "$METHOD" in squash|merge|rebase) ;; *) echo "::error::merge-method must be squash, merge or rebase"; exit 1 ;; esac
-          # REST only: the GraphQL quota (`gh pr view`, `gh pr checks`, `gh pr merge`) is shared by every job here and by
-          # anything else using the PAT, and ran out mid-wait. A failed call is retried on the next poll, not fatal.
-          tries=$(( (WAIT_MINUTES > 120 ? 120 : WAIT_MINUTES) ))
+          # Each call tries `gh` (GraphQL) first and falls back to the REST API when that fails, as it does once the PAT's
+          # GraphQL quota is spent (17 jobs polling at once did exactly that). A call that fails both ways is retried on the
+          # next poll, not fatal. Both paths give the same shape: "state sha" and [{name, bucket}] (pass, fail, pending, skipping).
+          fail_set='"failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"'
+          pr_info() {
+            gh pr view "$PR" -R "$REPO" --json state,headRefOid --jq '"\(.state | ascii_downcase) \(.headRefOid)"' 2>/dev/null \
+              || gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.head.sha)"'
+          }
+          pr_checks() {  # $1 = head sha
+            local out
+            # gh exits non-zero while checks are pending; only an empty stdout means the call itself failed.
+            out=$(gh pr checks "$PR" -R "$REPO" --json name,bucket,workflow 2>/dev/null || true)
+            if [ -n "$out" ]; then echo "$out"; return; fi
+            gh api --paginate "repos/$REPO/commits/$1/check-runs?per_page=100" --jq '.check_runs[] | {name, conclusion}' \
+              | jq -cs "map({name, bucket: (if .conclusion == null then \"pending\"
+                  elif .conclusion | IN($fail_set) then \"fail\"
+                  elif .conclusion | IN(\"skipped\", \"neutral\") then \"skipping\" else \"pass\" end)})"
+          }
+          merge_pr() {  # $1 = head sha
+            gh pr merge "$PR" -R "$REPO" "--$METHOD" --match-head-commit "$1" --delete-branch 2>/dev/null && return
+            gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f merge_method="$METHOD" -f sha="$1" --silent
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" --silent || true
+          }
+          tries=$(( (WAIT_MINUTES > 120 ? 120 : WAIT_MINUTES) * 2 ))
           green_sha=''
           for _ in $(seq 1 "$tries"); do
-            sleep 60
-            read -r pr_state sha < <(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.head.sha)"' 2>"$RUNNER_TEMP/api.err" || true)
+            sleep 30
+            read -r pr_state sha < <(pr_info 2>"$RUNNER_TEMP/api.err" || true)
             [ -n "${sha:-}" ] || { cat "$RUNNER_TEMP/api.err" >&2; continue; }
             [ "$pr_state" = open ] || { echo "PR is $pr_state; nothing to merge."; exit 0; }
-            checks=$(gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100" \
-              --jq '.check_runs[] | {name, conclusion}' 2>"$RUNNER_TEMP/api.err" | jq -cs '.') || checks=''
-            [ -n "$checks" ] || { cat "$RUNNER_TEMP/api.err" >&2; continue; }
-            if jq -e 'any(.[]; .conclusion | IN("failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"))' <<<"$checks" >/dev/null; then
+            checks=$(pr_checks "$sha" 2>"$RUNNER_TEMP/api.err") && [ -n "$checks" ] || { cat "$RUNNER_TEMP/api.err" >&2; continue; }
+            if jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' <<<"$checks" >/dev/null; then
               echo "::error::$REPO#$PR: a check failed; leaving the PR open for review."
-              jq -r '.[] | select(.conclusion | IN("failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure")) | "  \(.name): \(.conclusion)"' <<<"$checks"
+              jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | "  \(.workflow // "") / \(.name)"' <<<"$checks"
               exit 1
             fi
-            # Green: at least one check, none still running, the same head commit on two polls in a row.
-            if jq -e 'length > 0 and all(.[]; .conclusion | IN("success", "neutral", "skipped"))' <<<"$checks" >/dev/null; then
+            # Green: at least one check, none pending, the same head commit on two polls in a row.
+            if jq -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$checks" >/dev/null; then
               if [ "$green_sha" = "$sha" ]; then
-                gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f merge_method="$METHOD" -f sha="$sha" --silent
-                gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" --silent || true
+                merge_pr "$sha"
                 echo "Merged $REPO#$PR at $sha" >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
