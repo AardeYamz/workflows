@@ -64,6 +64,43 @@ class ReposCliTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             p.parse_args(["sync-prs", "--prs"])  # --prs belongs to builds only
 
+    def test_archive_selection(self):
+        import datetime
+        import re
+        import repos
+
+        def repo(name, head, other=None, issues=0):
+            commit = lambda date: {"committedDate": date}
+            refs = [{"name": "main", "target": commit(head)}] if head else []
+            if other:
+                refs.append({"name": "side", "target": commit(other)})
+            return {"name": name, "createdAt": "2019-01-01T00:00:00Z", "issues": {"totalCount": issues},
+                    "pullRequests": {"totalCount": 0}, "refs": {"nodes": refs},
+                    "defaultBranchRef": {"target": commit(head)} if head else None}
+
+        old = "2019-10-04T06:04:02Z"
+        have = [repo("326_Lab1", old, other="2026-05-01T00:00:00-05:00"), repo("empty", None),
+                repo("live", "2026-01-01T00:00:00-05:00"), repo("busy", old, issues=2)]
+        today = datetime.date(2026, 6, 1)
+        plan = {n: (newer, why) for n, _, newer, why in
+                repos.archive_plan(have, today, older_than=730, exclude=["EMPTY"])}
+        self.assertEqual(sorted(plan), ["326_Lab1", "busy", "empty"])
+        self.assertEqual(plan["326_Lab1"], (["side"], None))  # a newer side branch is reported, not a veto
+        self.assertEqual(plan["empty"], ([], "excluded"))
+        self.assertIn("open", plan["busy"][1])
+        self.assertEqual([p[0] for p in repos.archive_plan(have, today, match=re.compile("^[23][0-9]{2}_"))],
+                         ["326_Lab1"])
+        self.assertIsNone(repos.archive_plan(have, today, only=["busy"], include_open=True)[0][3])
+
+    def test_archive_needs_a_filter(self):
+        import repos
+        a = repos.build_parser().parse_args(["archive"])
+        self.assertFalse(a.apply)
+        with self.assertRaises(SystemExit):
+            repos.cmd_archive(a)
+        with self.assertRaises(SystemExit):
+            repos.build_parser().parse_args(["archive", "--older-than", "0"])
+
     def test_triggers(self):
         import repos
         self.assertEqual(repos.triggers("on: push\n"), {"push"})

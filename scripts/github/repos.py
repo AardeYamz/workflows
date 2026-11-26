@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-r"""Bulk GitHub Actions and PR chores across every repo under ~/GitHub (or the ones named with --repo).
+r"""Bulk GitHub chores: Actions and PRs across the repos under ~/GitHub, and archiving old repos on GitHub.
 
     python scripts/github/repos.py builds                          # dry run: list the builds it would start
     python scripts/github/repos.py builds --repo trips,yl-theme --prs --apply
     python scripts/github/repos.py builds --workflow build.yml --apply
     python scripts/github/repos.py sync-prs                        # dry run: which PRs are behind, which conflict
     python scripts/github/repos.py sync-prs --repo 37-bestick-rd --apply
+    python scripts/github/repos.py archive --older-than 730        # dry run: repos with no commit in 2 years
+    python scripts/github/repos.py archive --match '^[23][0-9]{2}_' --apply
 
 builds: starts each repo's build workflows on its default branch (and with --prs, on every open
 same-repo PR branch too). A build is a workflow with a `pull_request` trigger; --workflow names
@@ -21,11 +23,19 @@ branch's copy, as that workflow does. A PR that conflicts is left alone and repo
 reports conflicts too). Fork and Dependabot PRs are skipped. A push made with your own token (not
 GITHUB_TOKEN) starts the PR's pull_request workflows as usual.
 
-Only repos whose origin you own (your gh login, or --owner) are touched, so upstream clones under
-~/GitHub are left alone. Both are dry runs unless --apply. Needs the `gh` CLI, logged in with access to the repos (in CI, a
-token in GH_TOKEN). Shared plumbing lives in scripts/common/gitrepos.py.
+archive: archives (makes read-only) repos on GitHub that --owner owns; local checkouts are not needed
+or touched. Pick them with at least one of --older-than DAYS (last commit on the default branch; the push
+date and other branches are ignored, since bulk maintenance branches renew them), --match REGEX (searched
+in the name) and --repo; a repo must pass every one given. Branches with newer commits are listed, so
+check them before --apply. --exclude names are never touched, and a repo with open issues or PRs is
+skipped unless --include-open. Undo with `gh repo unarchive OWNER/NAME`.
+
+builds and sync-prs only touch repos whose origin you own (your gh login, or --owner), so upstream
+clones under ~/GitHub are left alone. All are dry runs unless --apply. Needs the `gh` CLI, logged in
+with access to the repos (in CI, a token in GH_TOKEN). Shared plumbing lives in scripts/common/gitrepos.py.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -39,6 +49,11 @@ from common import gitrepos  # noqa: E402
 from common.gitrepos import git  # noqa: E402
 
 BUILD_TRIGGER = "pull_request"
+OWNED = """query($owner:String!,$endCursor:String){repositoryOwner(login:$owner){
+repositories(first:50,after:$endCursor,ownerAffiliations:OWNER,isArchived:false){pageInfo{hasNextPage endCursor}
+nodes{name createdAt issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount}
+defaultBranchRef{target{...on Commit{committedDate}}}
+refs(refPrefix:"refs/heads/",first:100){nodes{name target{...on Commit{committedDate}}}}}}}}"""
 
 
 def gh(*args):
@@ -61,14 +76,17 @@ def slug(repo):
     return m.group(1) if m else None
 
 
+def login():
+    rc, out, err = gh("api", "user", "--jq", ".login")
+    if rc != 0 or not out:
+        raise SystemExit(f"cannot tell who you are from gh ({first_line(err)}); pass --owner")
+    return out
+
+
 def targets(args):
     """Yield (checkout, default branch, owner/name) for each selected repo on GitHub owned by --owner,
     fetching it first. Repos owned by someone else (upstream clones) are skipped without a fetch."""
-    owner = args.owner
-    if owner is None:
-        rc, owner, err = gh("api", "user", "--jq", ".login")
-        if rc != 0 or not owner:
-            raise SystemExit(f"cannot tell who you are from gh ({first_line(err)}); pass --owner")
+    owner = args.owner or login()
     others = 0
     for repo in gitrepos.discover(args.github, args.root, args.repo):
         name = slug(repo)
@@ -296,6 +314,96 @@ def cmd_sync_prs(args):
     return 1 if totals["failed"] or totals["conflict"] else 0
 
 
+# --------------------------------------------------------------------------------------------- archive
+
+def when(stamp):
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def last_commit(repo):
+    """When the default branch was last committed to; the creation time for an empty repo."""
+    head = repo["defaultBranchRef"]
+    # committedDate keeps the committer's offset: compare these as instants, not strings.
+    return when(head["target"]["committedDate"] if head else repo["createdAt"])
+
+
+def newer_branches(repo):
+    """Names of the branches (first 100) with a commit newer than the default branch's."""
+    date = last_commit(repo)
+    return [n["name"] for n in repo["refs"]["nodes"] if when(n["target"]["committedDate"]) > date]
+
+
+def archive_plan(repos, today, older_than=None, match=None, only=(), exclude=(), include_open=False):
+    """[(repo name, last commit date, newer branches, skip reason or None)] for the unarchived repos the
+    filters select."""
+    only = {n.lower() for n in only}
+    exclude = {n.lower() for n in exclude}
+    plan = []
+    for r in sorted(repos, key=lambda r: r["name"].lower()):
+        name = r["name"]
+        if (only and name.lower() not in only) or (match and not match.search(name)):
+            continue
+        date = last_commit(r).astimezone(datetime.timezone.utc).date()
+        if older_than is not None and (today - date).days < older_than:
+            continue
+        open_count = r["issues"]["totalCount"] + r["pullRequests"]["totalCount"]
+        reason = None
+        if name.lower() in exclude:
+            reason = "excluded"
+        elif open_count and not include_open:
+            reason = f"{open_count} open issue(s) or PR(s); --include-open archives it anyway"
+        plan.append((name, date, newer_branches(r), reason))
+    return plan
+
+
+def owned_repos(owner):
+    """Every unarchived repo `owner` owns that the gh token can see."""
+    rc, out, err = gh("api", "graphql", "--paginate", "-f", "query=" + OWNED, "-f", "owner=" + owner,
+                      "--jq", ".data.repositoryOwner.repositories.nodes[]")
+    if rc != 0:
+        raise SystemExit(f"cannot list the repos of {owner}: {first_line(err)}")
+    return [json.loads(line) for line in out.splitlines()]
+
+
+def cmd_archive(args):
+    only, exclude = split_names(args.repo), split_names(args.exclude)
+    if args.older_than is None and not args.match and not only:
+        raise SystemExit("archive needs --older-than, --match or --repo; it never selects every repo by default")
+    owner = args.owner or login()
+    repos = owned_repos(owner)
+    known = {r["name"].lower() for r in repos}
+    for name in only:
+        if name.lower() not in known:
+            print(f"? {name}: not an unarchived repo of {owner} (skipped)")
+    done = skipped = failed = 0
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    for name, date, newer, reason in archive_plan(repos, today, args.older_than, args.match, only, exclude,
+                                                  args.include_open):
+        label = f"{owner}/{name} (last commit {date}" + (f"; newer on {', '.join(newer)}" if newer else "") + ")"
+        if reason:
+            print(f"  skip     {label}: {reason}")
+            skipped += 1
+        elif not args.apply:
+            print(f"  archive  {label}  (dry run)")
+            done += 1
+        else:
+            rc, _, err = gh("repo", "archive", f"{owner}/{name}", "--yes")
+            print(f"  archived {label}" if rc == 0 else f"  FAILED   {label}: {first_line(err)}")
+            done += rc == 0
+            failed += rc != 0
+    verb = "archived" if args.apply else "would archive"
+    print(f"\n{verb} {done}, skipped {skipped}, failed {failed}"
+          + (f"  (undo: gh repo unarchive {owner}/NAME)" if args.apply else "  (re-run with --apply)"))
+    return 1 if failed else 0
+
+
+def positive_int(text):
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
 def add_args(ap):
     gitrepos.add_common_args(ap)
     ap.add_argument("--owner", help="only repos whose origin this GitHub user or org owns (default: your gh login; "
@@ -314,6 +422,15 @@ def build_parser():
     s = sub.add_parser("sync-prs", help="merge the default branch into every open PR that is behind")
     add_args(s)
     s.set_defaults(func=cmd_sync_prs)
+    a = sub.add_parser("archive", help="archive old or matching repos on GitHub")
+    a.add_argument("--older-than", type=positive_int, metavar="DAYS", help="no commit on the default branch for DAYS days")
+    a.add_argument("--match", type=re.compile, metavar="REGEX", help="repo names this regex is found in")
+    a.add_argument("--repo", action="append", metavar="NAME", help="only these repos (comma separated or repeated)")
+    a.add_argument("--exclude", action="append", metavar="NAME", help="never these repos (comma separated or repeated)")
+    a.add_argument("--include-open", action="store_true", help="also archive repos with open issues or PRs")
+    a.add_argument("--owner", help="user or organisation whose repos to archive (default: your gh login)")
+    a.add_argument("--apply", action="store_true", help="archive; without it, only list")
+    a.set_defaults(func=cmd_archive)
     return ap
 
 
