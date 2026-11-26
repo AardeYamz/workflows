@@ -184,7 +184,7 @@ jobs:
             gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f merge_method="$METHOD" -f sha="$1" --silent
             gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" --silent || true
           }
-          tries=$(( (WAIT_MINUTES > 120 ? 120 : WAIT_MINUTES) ))
+          tries=$(( WAIT_MINUTES > 120 ? 120 : WAIT_MINUTES ))
           green_sha=''
           for _ in $(seq 1 "$tries"); do
             sleep 60
