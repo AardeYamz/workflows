@@ -1,0 +1,70 @@
+name: Terraform release tag
+
+# Tags a linted default-branch commit tf-<UTC stamp>. An HCP Terraform workspace set to trigger on tags matching
+# ^tf-[0-9]{8}-[0-9]{6}$ then plans exactly that commit and waits for a confirmation (auto-apply off). Make the job need
+# every lint job, so an unlinted commit is never tagged. Nothing is tagged when the watched paths match the last tag, or
+# when the default branch has already moved past this commit (a re-run of an old run must not release old code).
+# Caller:
+#   jobs:
+#     release:
+#       needs: [ci, terraform]
+#       permissions:
+#         contents: write
+#       uses: AardeYamz/workflows/.github/workflows/terraform-release.yml@<sha> # <tag>
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: Space-separated paths that Terraform reads. A change to any of them gets a tag.
+        type: string
+        default: terraform
+      runs-on:
+        description: Runner label. Empty means the caller's vars.RUNNER, else ubuntu-26.04.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag for HCP Terraform
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ${{ inputs.runs-on || vars.RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: write # creates the tag
+    concurrency:
+      group: terraform-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # earlier tags, to compare with
+
+      - name: Tag the commit if Terraform's inputs changed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+          WATCH: ${{ inputs.paths }}
+        run: |
+          head=$(gh api "repos/$GH_REPO/commits/$BRANCH" --jq .sha)
+          if [ "$head" != "$SHA" ]; then
+            echo "::notice::$BRANCH has moved to ${head::7}; its own run releases it."
+            exit 0
+          fi
+          read -ra watch <<< "$WATCH"
+          last=$(git tag -l 'tf-*' --sort=-refname | sed -n 1p)
+          if [ -n "$last" ] && git diff --quiet "$last" "$SHA" -- "${watch[@]}"; then
+            echo "No change in $WATCH since $last: nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          tag="tf-$(date -u +%Y%m%d-%H%M%S)"
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA" > /dev/null
+          echo "Tagged ${SHA::7} as $tag. Confirm the run in HCP Terraform." | tee -a "$GITHUB_STEP_SUMMARY"
