@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +28,26 @@ class SyntaxTest(unittest.TestCase):
         script = os.path.join(REPO, "scripts", "github-desktop", "relocate.mjs")
         self.assertEqual(subprocess.run(["node", script], capture_output=True).returncode, 2)
         self.assertEqual(subprocess.run(["node", script, "claude-sessions"], capture_output=True).returncode, 2)
+
+
+class BumpConsumersTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("perl") and shutil.which("bash"), "Perl or bash not installed")
+    def test_pin_rewrite_matches_both_repo_names(self):
+        """Runs the rewrite line of bump-consumers.yml on pins under the old and the new name."""
+        with open(os.path.join(REPO, ".github", "workflows", "bump-consumers.yml"), encoding="utf-8") as f:
+            (cmd,) = [line.strip() for line in f if line.strip().startswith("perl -pi -e")]
+        old, new = "a" * 40, "b" * 40
+        pin = "    uses: AardeYamz/{}/.github/workflows/ci.yml@{} # {}\n"
+        other = pin.format("other-workflows", old, "v1.0.0") + "    uses: AardeYamz/workflows/.github/workflows/ci.yml@v1\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ci.yml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(pin.format("workflows", old, "v1.0.0") + pin.format("infra-workflows", old, "v1.0.0") + other)
+            env = dict(os.environ, SHA=new, TAG="v2.0.0")
+            subprocess.run(["bash", "-c", 'files=("$1"); ' + cmd, "bash", path], env=env, check=True)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), pin.format("workflows", new, "v2.0.0")
+                                 + pin.format("infra-workflows", new, "v2.0.0") + other)
 
 
 class WorktreesCliTest(unittest.TestCase):
