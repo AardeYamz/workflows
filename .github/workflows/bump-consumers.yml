@@ -50,6 +50,7 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          SELF: ${{ github.event.repository.name }}
         run: |
           tag="$INPUT_TAG"
           [ -n "$tag" ] || { [ "$REF_TYPE" = tag ] && tag="$REF_NAME"; } \
@@ -58,7 +59,8 @@ jobs:
           {
             echo "tag=$tag"
             echo "sha=$sha"
-            echo "repos=$(jq -c 'map(select(.repo != "workflows"))' list/repos.json)"  # one line: a step output can't span lines
+            # Every listed repo but this one, whatever it is called now. One line: a step output can't span lines.
+            echo "repos=$(jq -c --arg self "$SELF" 'map(select(.repo != $self))' list/repos.json)"
           } >> "$GITHUB_OUTPUT"
           echo "Bumping consumers to $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
 
@@ -68,12 +70,13 @@ jobs:
     with:
       branch: chore/workflows-bump
       paths: .github/workflows
-      # Only full 40-character SHA pins are rewritten; floating tags (v1) are left alone.
+      # Only full 40-character SHA pins are rewritten; floating tags (v1) are left alone. Both names this repo has during
+      # its rename (docs/naming.md in personal-repos) match, and a pin keeps the name it already uses.
       cmd: |
         shopt -s nullglob
         files=(.github/workflows/*.yml .github/workflows/*.yaml)
         [ ${#files[@]} -gt 0 ] || exit 0
-        perl -pi -e 's{(AardeYamz/workflows/[\w./-]+@)[0-9a-f]{40}( +# +)v\d+\.\d+\.\d+}{$1$ENV{SHA}$2$ENV{TAG}}g' "${files[@]}"
+        perl -pi -e 's{(AardeYamz/(?:infra-)?workflows/[\w./-]+@)[0-9a-f]{40}( +# +)v\d+\.\d+\.\d+}{$1$ENV{SHA}$2$ENV{TAG}}g' "${files[@]}"
       title: Bump shared workflows to ${{ needs.release.outputs.tag }}
       body: Repins the `AardeYamz/workflows` reusable workflows to `${{ needs.release.outputs.tag }}` (opened by that repo's Bump consumers workflow).
       env: '{"TAG": "${{ needs.release.outputs.tag }}", "SHA": "${{ needs.release.outputs.sha }}"}'
